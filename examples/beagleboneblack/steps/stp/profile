@@ -1,0 +1,21 @@
+
+#
+#Units
+#
+U INCH
+
+#
+#Layer features
+#
+S P 0
+OB 0.25 0 I
+OC 0 0.25 0.25 0.25 Y
+OS 0 1.9
+OC 0.25 2.15 0.25 1.9 Y
+OS 2.9 2.15
+OC 3.4 1.65 2.9 1.65 Y
+OS 3.4 0.5
+OC 2.9 0 2.9 0.5 Y
+OS 0.25 0
+OE
+SE

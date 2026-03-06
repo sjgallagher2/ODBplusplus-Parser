@@ -1,0 +1,68 @@
+<wfState parentWizardPath="P:/apps/ecad/cds2odb/prod/B2B_ODB++Inside-10.0/sys//wizards/brd2odb.xmlz" >
+    <variables>
+        <variable value="" name="listDBList" />
+        <variable value="false" name="bHelpGui" />
+        <variable value="-1" name="textCOMANS" />
+        <variable value="false" name="bJobExist" />
+        <variable value="no" name="oReadSqa" />
+        <variable value="place_bound" name="oComponent" />
+        <variable value="stp" name="elSTEP" />
+        <variable value="no" name="bSilkFill" />
+        <variable value="" name="tActualDesignPath" />
+        <variable value="full" name="oExport" />
+        <variable value="false" name="bMoreOpt" />
+        <variable value="C:/Users/NAMEHERE/BRD2ODB_TMP/files_list-genesis186a8.pa06eetsk003.21328" name="eResp" />
+        <variable value="no" name="oSkipRefdes" />
+        <variable value="odbjob" name="tOutDesignName" />
+        <variable value="odbjob" name="elJOB" />
+        <variable value="${pEDASourcePath}" name="pLogPath" />
+        <variable value="ignore" name="oPadflash" />
+        <variable value="no" name="bRoundCorners" />
+        <variable value="" name="eModels" />
+        <variable value="brd2odb_log" name="tLogName" />
+        <variable value="fatf" name="oASM" />
+        <variable value="false" name="bFab" />
+        <variable value="no" name="bReadDrc" />
+        <variable value="false" name="bAssem" />
+        <variable value="false" name="bNetlist" />
+        <variable value="0.1" name="fOutline" />
+        <variable value="" name="pAifFile" />
+        <variable value="0.2" name="fMatch" />
+        <variable value="" name="pTf" />
+        <variable value="" name="pReadConfig" />
+        <variable value="no" name="bThermalError" />
+        <variable value="standard" name="textCurrentMode" />
+        <variable value="false" name="bDelete" />
+        <variable value="false" name="bRemoveEDA" />
+        <variable value="true" name="boolIsDirectMode" />
+        <variable value="no" name="oSuppress" />
+        <variable value="false" name="bVer" />
+        <variable value="no" name="oTrSym" />
+        <variable value="odb_viewer" name="oInvocationMode" />
+        <variable value="inch" name="oApplicationUnits" />
+        <variable value="v7" name="oVersion" />
+        <variable value="false" name="bHelp" />
+        <variable value="no" name="bSuppressPads" />
+        <variable value="false" name="bVerify" />
+        <variable value="no" name="bBb" />
+        <variable value="" name="pMatrixFile" />
+        <variable value="0" name="intSTATUS" />
+        <variable value="tar_gzip" name="oCompression" />
+        <variable value="" name="tUdb" />
+        <variable value="" name="textCurrentDC" />
+        <variable value="true" name="bGuiMode" />
+        <variable value="no" name="bFi" />
+        <variable value="mentor_boardstation" name="oEDA" />
+        <variable value="r" name="oProfileSymbolType" />
+        <variable value="default" name="oTm" />
+        <variable value="false" name="bVwr" />
+        <variable value="yes" name="oNetNoneFlag" />
+        <variable value="" name="elDPRS" />
+        <variable value="" name="tUdt" />
+        <variable value="no" name="bIff" />
+        <variable value="${pOutputPath}/${tOutDesignName}" name="out_job_full_path" />
+        <variable value="true" name="bNeutNets" />
+    </variables>
+    <stages/>
+    <executionState nextCmdIndex="2" nextStageIndex="0" executionMode="standard" designCenter="" nextStageName="Settings_Preferences" running="true" nextBlockIndex="6" />
+</wfState>

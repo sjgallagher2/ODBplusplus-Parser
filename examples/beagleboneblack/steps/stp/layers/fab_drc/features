@@ -1,0 +1,55 @@
+
+#
+#Units
+#
+U INCH
+
+#
+#Feature attribute names
+#
+@0 .drc_etch_lyrs_all
+@1 .area_name
+@2 .drc_etch_lyrs
+
+#
+#Feature attribute text strings
+#
+&0 BGA
+&1 top;smt;sst
+&2 BGA.5MM
+
+#
+#Layer features
+#
+S P 0;0,1=0
+OB 2.324 0.68875 I
+OS 2.324 1.26125
+OS 2.676 1.26125
+OS 2.676 0.68875
+OS 2.324 0.68875
+OE
+SE
+S P 0;0,1=0
+OB 1.5 0.85 I
+OS 1.5 1.45
+OS 2.1 1.45
+OS 2.1 0.85
+OS 1.5 0.85
+OE
+SE
+S P 0;1=2,2=1
+OB 1.025 1.5 I
+OS 1.025 1.8
+OS 1.325 1.8
+OS 1.325 1.5
+OS 1.025 1.5
+OE
+SE
+S P 0;1=2,2=1
+OB 0.4875 1.7 I
+OS 0.5375 1.7
+OS 0.5375 1.6375
+OS 0.4875 1.6375
+OS 0.4875 1.7
+OE
+SE
