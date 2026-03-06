@@ -50,7 +50,7 @@ class ODBLayerMatrixType(Enum):
     MASK = auto()
     CONDUCTIVE_PASTE = auto()
 
-SIMULATION_LAYER_TYPES = [ODBLayerMatrixType.COMPONENT,ODBLayerMatrixType.SIGNAL,ODBLayerMatrixType.POWER_GROUND,ODBLayerMatrixType.MIXED,ODBLayerMatrixType.DIELECTRIC]
+SIMULATION_LAYER_TYPES = [ODBLayerMatrixType.COMPONENT,ODBLayerMatrixType.SIGNAL,ODBLayerMatrixType.POWER_GROUND,ODBLayerMatrixType.MIXED,ODBLayerMatrixType.DIELECTRIC,ODBLayerMatrixType.DRILL]
 
 class ODBLayerMatrixPolarity(Enum):
     POSITIVE=auto()
@@ -654,7 +654,7 @@ class ODBRoundSymbol(ODBSymbol):
         if m:
             return symcls(unit, float(m.group("d")))
     def getpatch(self, xy, color='k') -> mpl.patches.CirclePolygon:
-        scale = get_unit_conversion(self.unit,GLOBAL_CONFIG.default_unit)
+        scale = get_unit_conversion(self.unit,odbconf.default_unit)
         # patch = mpl.patches.Circle(xy,radius=scale*self.diameter/2.,fill=True,fc=color)
         patch = mpl.patches.CirclePolygon(xy,radius=scale*self.diameter/2.,resolution=10,fill=True,fc=color)
         return patch
@@ -673,7 +673,7 @@ class ODBSquareSymbol(ODBSymbol):
         if m:
             return symcls(unit,float(m.group("s")))
     def getpatch(self, xy, color='k') -> mpl.patches.Rectangle:
-        scale = get_unit_conversion(self.unit,GLOBAL_CONFIG.default_unit)
+        scale = get_unit_conversion(self.unit,odbconf.default_unit)
         xy = (xy[0]-scale*self.side/2, xy[1]-scale*self.side/2)
         patch = mpl.patches.Rectangle(xy,width=scale*self.side,height=scale*self.side,fill=True,fc=color)
         return patch
@@ -693,7 +693,7 @@ class ODBRectangleSymbol(ODBSymbol):
             return symcls(unit,float(m.group("w")), float(m.group("h")))
 
     def getpatch(self, xy, color='k') -> mpl.patches.Rectangle:
-        scale = get_unit_conversion(self.unit,GLOBAL_CONFIG.default_unit)
+        scale = get_unit_conversion(self.unit,odbconf.default_unit)
         xy = (xy[0]-scale*self.width/2, xy[1]-scale*self.height/2)
         patch = mpl.patches.Rectangle(xy,width=scale*self.width,height=scale*self.height,fill=True,fc=color)
         return patch
@@ -726,7 +726,7 @@ class ODBRoundedRectangleSymbol(ODBSymbol):
                 m.group("corners"),
             )
     def getpatch(self, xy, color='k') -> mpl.patches.FancyBboxPatch:
-        scale = get_unit_conversion(self.unit,GLOBAL_CONFIG.default_unit)
+        scale = get_unit_conversion(self.unit,odbconf.default_unit)
         xy = (xy[0]-scale*self.width/2, xy[1]-scale*self.height/2)
         patch = mpl.patches.FancyBboxPatch(xy,width=scale*self.width,height=scale*self.height,
                                            boxstyle=f'Round, pad=0, rounding_size={scale*self.radius}',
@@ -777,7 +777,7 @@ class ODBOvalSymbol(ODBSymbol):
             return symcls(unit,float(m.group("w")), float(m.group("h")))
         
     def getpatch(self, xy, color='k') -> mpl.patches.FancyBboxPatch:
-        scale = get_unit_conversion(self.unit,GLOBAL_CONFIG.default_unit)
+        scale = get_unit_conversion(self.unit,odbconf.default_unit)
         xy = (xy[0]-scale*self.width/2, xy[1]-scale*self.height/2)
         
         if self.width > self.height:
@@ -1389,12 +1389,13 @@ class ODBFeatureBarcode(ODBFeatureBase):
 
 
 class ODBFeatureFile:
-    def __init__(self,fpath: Path):
+    def __init__(self,fpath: Path, layer_name: str):
         self.symbol_table = []
         self.symbol_dict = {}
         self.attr_table = []
         self.attr_texts = []
         self.features_list = []
+        self.layer_name = layer_name
         
         
         if not fpath.exists():
@@ -1405,6 +1406,8 @@ class ODBFeatureFile:
         # Clean
         lines = [l.strip() for l in lines if l.strip()!='']
         lines = [re.split(r'[\s\;]',l) for l in lines if not l.startswith('#')]
+        if len(lines) == 0:
+            return
         
         # 0. Get units
         # In v7 the first line can be "U INCH" or "U MM", with default INCH
@@ -1609,19 +1612,146 @@ for alv in attrlist_vars:
 print(f"Found board thickness: {board_thickness} with unit {ODB_UNIT.name}")
 # NOTE: the UNITS variable is required for v8, but not for v7
 
-GLOBAL_CONFIG = ODBConfig(root_name, root_p, ODB_UNIT, ODB_VERSION, matrix, nsteps, nlayers,board_thickness=board_thickness)
+odbconf = ODBConfig(root_name, root_p, ODB_UNIT, ODB_VERSION, matrix, nsteps, nlayers,board_thickness=board_thickness)
 
 
-# Parse a features file
+# Parse relevant layers
+stepname = odbconf.matrix.matrix_steps[0].name
+layer_features = []
+boardoutline_path = root_p/f'steps/{stepname}/profile'  # example 1
+boardoutline_feat = ODBFeatureFile(boardoutline_path,'profile')
+for layer in odbconf.matrix.matrix_layers:
+    if layer.layertype in SIMULATION_LAYER_TYPES:
+        featpath = root_p/f'steps/{stepname}/layers/{layer.name}/features'
+        featfile = ODBFeatureFile(featpath,layer.name)
+        layer_features.append(featfile)
 
-stepname = GLOBAL_CONFIG.matrix.matrix_steps[0].name
-featpath1 = root_p/f'steps/{stepname}/profile'  # example 1
-featpath2 = root_p/f'steps/{stepname}/layers/lyr2_gnd/features'  # example 2
-featpath3 = root_p/f'steps/{stepname}/layers/bottom/features'  # example 3
-featfile1 = ODBFeatureFile(featpath1)
-featfile2 = ODBFeatureFile(featpath2)
-featfile3 = ODBFeatureFile(featpath3)
 fig,ax = plt.subplots(1,1,figsize=(7,7))
-featfile1.draw(ax)
-featfile2.draw(ax)
-featfile3.draw(ax)
+boardoutline_feat.draw(ax)
+my_layers = ['TOP','DRILL']
+for feat in layer_features:
+    if feat.layer_name in my_layers:
+        feat.draw(ax)
+        # pass
+
+# Parse netlist
+"""
+Note: "staggered" = points that were staggered by an algorithm to make them accessible to test probes
+First line:
+    H optimize <y|n>     yes/no to reflect whether the netlist was optimized
+
+"""
+
+# class ODBNetlistFile:
+#     def __init__(self,fpath: Path):
+        # self.netnames = []  # list of (serial, name) tuples
+netnames_dict = {}  # dict from serial to netname
+fpath = odbconf.root_path/f'steps/{stepname}/netlists/cadnet/netlist'
+if not fpath.exists():
+    raise ValueError(f"File {fpath} does not exist!")
+lines = []
+with open(fpath,'r') as f:
+    lines = f.readlines()
+# Clean
+lines = [l.strip() for l in lines if l.strip()!='']
+lines = [re.split(r'[\s\;]',l) for l in lines if not l.startswith('#')]
+if len(lines) == 0:
+    raise ValueError("No length")  # for interactive testing only
+
+# 0. Get optimized/staggered
+# Probably can skip this
+# In v7 the first line is "H optimize <Y|N> [staggered <Y|N>]"
+if lines[0][0] != 'H':
+    raise ValueError(f"Expected first line to start with `H`, found: {lines[0]}")
+
+for i,line in enumerate(lines):
+    if line[0].startswith('$'):
+        serial = int(line[0][1:])
+        name = line[1]
+        # self.netnames.append((serial,name))
+        netnames_dict[serial]=name
+
+"""
+All other lines have the format:
+    <net_num> <radius> <x> <y> <side> [ <w> <h> ] <epoint> <exp> [ <c> ] [staggerred <sx> <sy> <sr>] [v] [f] [t] [m][<x>] [<e>] [<by>]
+
+net_num     The number of the net (start from -1), corresponding to the
+            previously defined netlist section (when a feature does not belong
+            to a net it is defined as $NONE$). Net numbers start from -1
+            (-1 represents a tooling hole).
+radius  Drill radius (inches) or 0.002 for SMD pads
+x,y     point coordinates (inches)
+side    'T' for top, 'D' for bottom, 'B' for both
+w,h     (opt) Width and height of non-drilled pads (only when radius = 0)
+epoint  'e' for net end point, 'm' for net mid point
+exp     'e' for solder mask exposed point
+        'c' for solder mask covered point
+        'p' for solder mask covered primary point on top layer
+        's' for solder mask covered secondary point on bottom layer
+'c'     Comment point
+sx,sy   Coordinates of staggered point
+sr      Radius of staggered point
+v       'v' for a via point
+f       Fiducial point
+t       Test point
+m       Appears when a netlist point is designated as a test point by
+        assigning it the .critical_tp attribute. Normally this is
+        applied to mid-points that need to be tested. The Netlist Optimizer
+        determines mid-points to be not testable unless assigned this
+        attribute. If both .non_tp and .critical_tp are assigned to
+        the same point, .critical_tp takes precedence and the mid
+        point is tested. In case of a drilled pad, the attribute must be
+        added to the drill hole.
+x       ‘eXtended' appears if net point is extended
+e       ‘<Extension>' appears if net point is an extension
+by      { c s b n }
+        c - test from component side
+        s - test from solder side
+        b - test from both sides
+        a - test from any one side.
+        n - side not defined
+        (if <by> value not defined, n is assumed)
+arsize_top  'Annular Ring size for Top' represents the minimum width of
+            exposed copper (from solder mask) around a drill hole on the top
+            outer layer.
+arsize_bot  Same as for arsize_top but for bottom part of the hole.
+            If hole does not go through top / bottom layer, the corresponding
+            parameter (arsize_top / arsize_bot) should not be defined
+            or set to 0. Parameters are keyword parameters and may be
+            placed at any place after the positional ones.
+is_shrink   Y - point size was shrunk to fit solder-mask opening.
+            N - point size is limited only by pad size.
+"""
+
+@dataclass 
+class ODBNetPoint:
+    net_num: int
+    radius: float
+    x: float
+    y: float 
+    side: str
+
+net_points = []
+for i,line in enumerate(lines):
+    if line[0][0] not in ['$','H']:
+        net_num = int(line[0])
+        radius = float(line[1])
+        x = float(line[2])
+        y = float(line[3])
+        side = line[4]
+        netpt = ODBNetPoint(net_num,radius,x,y,side)
+        net_points.append(netpt)
+
+
+for netp in net_points:
+    if netp.side in ['T','B']:  # Top or Both
+        ax.annotate(
+            netnames_dict[netp.net_num],
+            xy=(netp.x,netp.y),
+            xytext=(0,0),
+            xycoords='data',
+            textcoords='offset points',
+            ha='center',
+            size='8',color='r'
+            )
+        
