@@ -8,6 +8,9 @@ but for now it's mostly ad-hoc as required. There is an example ODB++ archive fo
 the [Beaglebone Black](https://github.com/beagleboard/beaglebone-black/tree/master) that
 serves as a testing ground for feature completeness. 
 
+Currently, the "documentation" is the `main.py` file and the comments therein. As this
+project matures and stabilizes, documentation should follow. 
+
 This ugly file format zips a bunch (sometimes hundreds) of separate files together into 
 an archive that can be shared. It seems to be well-supported by software. 
 Unlike IPC-2581, this standard is freely available.
