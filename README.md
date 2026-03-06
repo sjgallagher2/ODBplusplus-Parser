@@ -22,6 +22,12 @@ They justify the tree structure with this flimsy reasoning:
 
 Note: Avoid the C++ library ODB Design, it's a vibe-coded mess. 
 
+Current status: 
+
+Lines, curves, and pads (only some standard symbols) are supported. 
+
+![Beaglebone Black board rendered by ODB++ Parser](/examples/beaglebone_render1.png)
+
 ## ODB++ Basics
 The ODB++ format stores what they call a **product model** (v8 terminology) or **job** 
 (v7 terminology). It contains layer geometry (steps) and layer information. The stackup

@@ -643,43 +643,60 @@ class ODBSymbol:
 
 @dataclass
 class ODBRoundSymbol(ODBSymbol):
-    diameter: int
+    unit: ODBUnit
+    diameter: float
 
     pattern = re.compile(r"^r(?P<d>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("d")))
+            return symcls(unit, float(m.group("d")))
+    def getpatch(self, xy, color='k') -> mpl.patches.CirclePolygon:
+        scale = get_unit_conversion(self.unit,GLOBAL_CONFIG.default_unit)
+        # patch = mpl.patches.Circle(xy,radius=scale*self.diameter/2.,fill=True,fc=color)
+        patch = mpl.patches.CirclePolygon(xy,radius=scale*self.diameter/2.,resolution=10,fill=True,fc=color)
+        return patch
 
 
 @dataclass
 class ODBSquareSymbol(ODBSymbol):
+    unit: ODBUnit
     side: float
 
     pattern = re.compile(r"^s(?P<s>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("s")))
-
+            return symcls(unit,float(m.group("s")))
+    def getpatch(self, xy, color='k') -> mpl.patches.Rectangle:
+        scale = get_unit_conversion(self.unit,GLOBAL_CONFIG.default_unit)
+        xy = (xy[0]-scale*self.side/2, xy[1]-scale*self.side/2)
+        patch = mpl.patches.Rectangle(xy,width=scale*self.side,height=scale*self.side,fill=True,fc=color)
+        return patch
 
 @dataclass
 class ODBRectangleSymbol(ODBSymbol):
+    unit: ODBUnit
     width: float
     height: float
 
     pattern = re.compile(r"^rect(?P<w>\d+(?:\.\d+)?)x(?P<h>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("w")), float(m.group("h")))
+            return symcls(unit,float(m.group("w")), float(m.group("h")))
 
+    def getpatch(self, xy, color='k') -> mpl.patches.Rectangle:
+        scale = get_unit_conversion(self.unit,GLOBAL_CONFIG.default_unit)
+        xy = (xy[0]-scale*self.width/2, xy[1]-scale*self.height/2)
+        patch = mpl.patches.Rectangle(xy,width=scale*self.width,height=scale*self.height,fill=True,fc=color)
+        return patch
 
 # ----------------------------
 # Rounded / Chamfered Rectangles
@@ -687,6 +704,7 @@ class ODBRectangleSymbol(ODBSymbol):
 
 @dataclass
 class ODBRoundedRectangleSymbol(ODBSymbol):
+    unit: ODBUnit
     width: float
     height: float
     radius: float
@@ -697,19 +715,27 @@ class ODBRoundedRectangleSymbol(ODBSymbol):
     )
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
             return symcls(
+                unit,
                 float(m.group("w")),
                 float(m.group("h")),
                 float(m.group("rad")),
                 m.group("corners"),
             )
-
+    def getpatch(self, xy, color='k') -> mpl.patches.FancyBboxPatch:
+        scale = get_unit_conversion(self.unit,GLOBAL_CONFIG.default_unit)
+        xy = (xy[0]-scale*self.width/2, xy[1]-scale*self.height/2)
+        patch = mpl.patches.FancyBboxPatch(xy,width=scale*self.width,height=scale*self.height,
+                                           boxstyle=f'Round, pad=0, rounding_size={scale*self.radius}',
+                                           fill=True,fc=color)
+        return patch
 
 @dataclass
 class ODBChamferedRectangleSymbol(ODBSymbol):
+    unit: ODBUnit
     width: float
     height: float
     radius: float
@@ -720,10 +746,11 @@ class ODBChamferedRectangleSymbol(ODBSymbol):
     )
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
             return symcls(
+                unit,
                 float(m.group("w")),
                 float(m.group("h")),
                 float(m.group("rad")),
@@ -737,34 +764,50 @@ class ODBChamferedRectangleSymbol(ODBSymbol):
 
 @dataclass
 class ODBOvalSymbol(ODBSymbol):
+    unit: ODBUnit
     width: float
     height: float
 
     pattern = re.compile(r"^oval(?P<w>\d+(?:\.\d+)?)x(?P<h>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("w")), float(m.group("h")))
-
+            return symcls(unit,float(m.group("w")), float(m.group("h")))
+        
+    def getpatch(self, xy, color='k') -> mpl.patches.FancyBboxPatch:
+        scale = get_unit_conversion(self.unit,GLOBAL_CONFIG.default_unit)
+        xy = (xy[0]-scale*self.width/2, xy[1]-scale*self.height/2)
+        
+        if self.width > self.height:
+            patch = mpl.patches.FancyBboxPatch(xy,width=scale*self.width,height=scale*self.height,
+                                           boxstyle=f'Round, pad=0, rounding_size={scale*self.height/2}',
+                                           fill=True,fc=color)
+        else:
+            patch = mpl.patches.FancyBboxPatch(xy,width=scale*self.width,height=scale*self.height,
+                                           boxstyle=f'Round, pad=0, rounding_size={scale*self.width/2}',
+                                           fill=True,fc=color)
+        return patch
 
 @dataclass
 class ODBDiamondSymbol(ODBSymbol):
+    unit: ODBUnit
     width: float
     height: float
 
     pattern = re.compile(r"^di(?P<w>\d+(?:\.\d+)?)x(?P<h>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("w")), float(m.group("h")))
+            return symcls(unit,float(m.group("w")), float(m.group("h")))
 
 
 @dataclass
 class ODBOctagonSymbol(ODBSymbol):
+    unit: ODBUnit
     width: float
     height: float
     corner: float
@@ -772,10 +815,11 @@ class ODBOctagonSymbol(ODBSymbol):
     pattern = re.compile(r"^oct(?P<w>\d+(?:\.\d+)?)x(?P<h>\d+(?:\.\d+)?)x(?P<r>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
             return symcls(
+                unit,
                 float(m.group("w")),
                 float(m.group("h")),
                 float(m.group("r"))
@@ -783,30 +827,32 @@ class ODBOctagonSymbol(ODBSymbol):
 
 @dataclass
 class ODBTriangleSymbol(ODBSymbol):
+    unit: ODBUnit
     base: float
     height: float
 
     pattern = re.compile(r"^tri(?P<b>\d+(?:\.\d+)?)x(?P<h>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("b")), float(m.group("h")))
+            return symcls(unit,float(m.group("b")), float(m.group("h")))
 
 
 @dataclass
 class ODBEllipseSymbol(ODBSymbol):
+    unit: ODBUnit
     width: float
     height: float
 
     pattern = re.compile(r"^el(?P<w>\d+(?:\.\d+)?)x(?P<h>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("w")), float(m.group("h")))
+            return symcls(unit,float(m.group("w")), float(m.group("h")))
 
 # ----------------------------
 # Donuts
@@ -814,44 +860,47 @@ class ODBEllipseSymbol(ODBSymbol):
 
 @dataclass
 class ODBRoundDonutSymbol(ODBSymbol):
+    unit: ODBUnit
     outer_diameter: float
     inner_diameter: float
 
     pattern = re.compile(r"^donut_r(?P<od>\d+(?:\.\d+)?)x(?P<id>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("od")), float(m.group("id")))
+            return symcls(unit,float(m.group("od")), float(m.group("id")))
 
 
 @dataclass
 class ODBSquareDonutSymbol(ODBSymbol):
+    unit: ODBUnit
     outer: float
     inner: float
 
     pattern = re.compile(r"^donut_s(?P<od>\d+(?:\.\d+)?)x(?P<id>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("od")), float(m.group("id")))
+            return symcls(unit,float(m.group("od")), float(m.group("id")))
 
 
 @dataclass
 class ODBSquareRoundDonutSymbol(ODBSymbol):
+    unit: ODBUnit
     outer: float
     inner: float
 
     pattern = re.compile(r"^donut_sr(?P<od>\d+(?:\.\d+)?)x(?P<id>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("od")), float(m.group("id")))
+            return symcls(unit,float(m.group("od")), float(m.group("id")))
 
 
 # ----------------------------
@@ -860,6 +909,7 @@ class ODBSquareRoundDonutSymbol(ODBSymbol):
 
 @dataclass
 class ODBHoleSymbol(ODBSymbol):
+    unit: ODBUnit
     diameter: float
     plating: str
     tol_plus: float
@@ -868,10 +918,11 @@ class ODBHoleSymbol(ODBSymbol):
     pattern = re.compile(r"^hole(?P<d>\d+(?:\.\d+)?)x(?P<p>[pnv])x(?P<tp>\d+(?:\.\d+)?)x(?P<tm>\d+(?:\.\d+)?)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
             return symcls(
+                unit,
                 float(m.group("d")),
                 m.group("p"),
                 float(m.group("tp")),
@@ -881,15 +932,15 @@ class ODBHoleSymbol(ODBSymbol):
 
 @dataclass
 class ODBNullSymbol(ODBSymbol):
+    unit: ODBUnit
     ext: float
-
     pattern = re.compile(r"^null(?P<e>\d+)$")
 
     @classmethod
-    def parse(symcls, text):
+    def parse(symcls, text, unit: ODBUnit):
         m = symcls.pattern.match(text)
         if m:
-            return symcls(float(m.group("e")))
+            return symcls(unit,float(m.group("e")))
 
 
 # ----------------------------
@@ -915,11 +966,11 @@ ODBSYMBOL_CLASSES = [
 ]
 
 
-def parse_odb_symbol(text: str) -> ODBSymbol:
+def parse_odb_symbol(text: str, unit: ODBUnit) -> ODBSymbol:
     text = text.strip()
 
     for symcls in ODBSYMBOL_CLASSES:
-        symbol = symcls.parse(text)
+        symbol = symcls.parse(text,unit)
         if symbol:
             return symbol
 
@@ -953,7 +1004,7 @@ class ODBFeatureType(Enum):
 class ODBFeatureBase:
     pass
 class ODBFeatureLine(ODBFeatureBase):
-    def __init__(self,txt):
+    def __init__(self,txt,unit: ODBUnit):
         """
         txt: list[str] split by space
         
@@ -966,6 +1017,7 @@ class ODBFeatureLine(ODBFeatureBase):
         """
         if len(txt) < 8:  # L + 7 args
             raise ValueError("Line feature does not have enough arguments.")
+        self.unit = unit
         self.xs = float(txt[1])
         self.ys = float(txt[2])
         self.xe = float(txt[3])
@@ -985,7 +1037,7 @@ class ODBFeatureLine(ODBFeatureBase):
         return f'ODBFeatureLine(xs={self.xs},ys={self.ys},xe={self.xe},ye={self.ye},sym_num={self.sym_num},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt})'
         
 class ODBFeatureArc(ODBFeatureBase):
-    def __init__(self,txt):
+    def __init__(self,txt,unit: ODBUnit):
         """
         txt: list[str] split by space
         
@@ -999,6 +1051,7 @@ class ODBFeatureArc(ODBFeatureBase):
         dcode gerber dcode number (0 if not defined)
         cw Y for clockwise, N for counter clockwise
         """
+        self.unit = unit
         if len(txt) < 11:  # A + 10 args
             raise ValueError(f"Arc feature does not have enough arguments: {txt}")
         self.xs = float(txt[1])
@@ -1091,13 +1144,14 @@ class ODBFeatureSurface(ODBFeatureBase):
         ISLAND=auto()
         HOLE=auto()
     class ODBSurfacePolygon:
-        def __init__(self,txt_lines):
+        def __init__(self,txt_lines,unit: ODBUnit):
             """
             NOTE: txt_lines MUST contain ALL lines for the surface (from OB to OE)
             All lines should be split by spaces ' '
             
             Points are stored as complex numbers
             """
+            self.unit = unit
             if txt_lines[0][0] != 'OB' or txt_lines[-1][0] != 'OE':
                 raise ValueError(f"Could not find start and end of polygon: {txt_lines}")
             self.xbs = float(txt_lines[0][1])
@@ -1162,11 +1216,12 @@ class ODBFeatureSurface(ODBFeatureBase):
         def __repr__(self):
             return f'ODBSurfacePolygon(bs={self.bs},segments={self.segments})'
     
-    def __init__(self,txt_lines):
+    def __init__(self,txt_lines,unit: ODBUnit):
         """
         NOTE: txt_lines MUST contain ALL lines for the surface (from S to SE)
         All lines should be split by spaces ' '
         """
+        self.unit = unit
         if txt_lines[0][0] != 'S' or txt_lines[-1][0] != 'SE':
             raise ValueError(f"Could not find start and end of surface: {txt_lines}")
         # The first line is the surface descriptor itself
@@ -1190,7 +1245,7 @@ class ODBFeatureSurface(ODBFeatureBase):
                 poly_end_idxs.append(i+1)
         poly_idxs = list(zip(poly_beg_idxs,poly_end_idxs))
         for pidxs in poly_idxs:
-            self.polygons.append(ODBFeatureSurface.ODBSurfacePolygon(txt_lines[pidxs[0]:pidxs[1]+1]))
+            self.polygons.append(ODBFeatureSurface.ODBSurfacePolygon(txt_lines[pidxs[0]:pidxs[1]+1],self.unit))
     def draw(self,ax,sym_dict):
         for poly in self.polygons:
             poly.draw(ax,sym_dict)  # NOTE: ignoring polarity
@@ -1230,12 +1285,13 @@ class ODBFeaturePad(ODBFeatureBase):
                 Note: To maintain backward compatibility, values 0-7 are read
                 from legacy data, but saved in the new format.
     """
-    def __init__(self,txt):
+    def __init__(self,txt,unit: ODBUnit):
         """
         txt: list[str] of string split by space ' '
         """
         if len(txt) < 7:
             raise ValueError(f"Found incorrect number of arguments for pad. Text: {txt}")
+        self.unit = unit
         self.x = float(txt[1])
         self.y = float(txt[2])
         if txt[3] == '-1':
@@ -1258,8 +1314,15 @@ class ODBFeaturePad(ODBFeatureBase):
             if len(txt) > 7:
                 self.attrtxt = ' '.join(txt[7:])
     def draw(self,ax,sym_dict):
-        pass
-        #print(f"Pad with symbol {sym_dict[self.sym_num]}")
+        if self.sym_num in sym_dict.keys():
+            # For now, only process existing symbols (no user symbols)
+            # sym_dict maps serial number to ODBxyzSymbol object
+            # if isinstance(sym_dict[self.sym_num],ODBRoundSymbol):
+            sym = sym_dict[self.sym_num]
+            
+            patch = sym.getpatch((self.x,self.y))
+            ax.add_patch(patch)
+                
     
     def __repr__(self):
         return f'ODBFeaturePad(x={self.x},y={self.y},sym_num={self.sym_num},resize_factor={self.resize_factor},dcode={self.dcode},orient_def={self.orient_def},attrtxt={self.attrtxt})'
@@ -1323,6 +1386,134 @@ class ODBFeatureBarcode(ODBFeatureBase):
     Text text string
     """
     pass
+
+
+class ODBFeatureFile:
+    def __init__(self,fpath: Path):
+        self.symbol_table = []
+        self.symbol_dict = {}
+        self.attr_table = []
+        self.attr_texts = []
+        self.features_list = []
+        
+        
+        if not fpath.exists():
+            raise ValueError(f"File {fpath} does not exist!")
+        lines = []
+        with open(fpath,'r') as f:
+            lines = f.readlines()
+        # Clean
+        lines = [l.strip() for l in lines if l.strip()!='']
+        lines = [re.split(r'[\s\;]',l) for l in lines if not l.startswith('#')]
+        
+        # 0. Get units
+        # In v7 the first line can be "U INCH" or "U MM", with default INCH
+        features_unit = ODB_UNIT
+        features_scale = 1.0#get_unit_conversion(ODB_UNIT,features_unit)  # default to inch
+        if lines[0][0] == ['U']:
+            features_unit = ODBUnit[lines[0][1]]
+            features_scale = get_unit_conversion(unit, ODB_UNIT)  # override if necessary
+        
+        surf_beg_idxs = []
+        surf_end_idxs = []
+        
+        for i,line in enumerate(lines):
+            # 1. Read features - Symbols Table
+            # The symbols table contains the names of all symbols used by the features, with corresponding
+            # serial numbers for reference
+            # Format: $<serial> <symbolname> [I|M]
+            if features_unit == ODBUnit.INCH:
+                line_unit = ODBUnit.MIL
+            else:
+                line_unit = ODBUnit.MICRON
+            line_scale = 1.0
+            if line[0].startswith('$'):
+                serial = int(line[0][1:])
+                name = line[1]
+                if len(line) == 3:
+                    line_unit = line[2]
+                    if line_unit == 'I':
+                        line_unit = ODBUnit.MIL
+                    else:
+                        line_unit = ODBUnit.MICRON
+                    line_scale = get_unit_conversion(features_unit, line_unit)
+                entry = ODBSymbolTableEntry(serial,name,line_unit)
+                self.symbol_table.append(entry)
+                
+            
+            # 2. Read features - Attribute Table
+            # The attribute table contains the names of attributes used by the features, with SNs
+            # Line format:
+            #  @<serial> <name>
+            elif line[0].startswith('@'):
+                serial_num = int(line[0][1:])
+                attr_name = line[1]
+                is_system = attr_name.startswith('.')
+                entry = ODBAttributeNameEntry(serial_num, attr_name,is_system)
+                self.attr_table.append(entry)
+            
+            # 3. Read features - Attribute Texts
+            # The attribute texts are lists of text strings with values for text attributes
+            # Line format:
+            #  &<serial> <text>
+            elif line[0].startswith('&'):
+                serial_num = int(line[0][1:])
+                text = ' '.join(line[1:])
+                entry = ODBAttributeStringsEntry(serial_num,text)
+                self.attr_texts.append(entry)
+                
+            
+            # 4. Read features - Features List
+            # The features list contains the features data
+            # Line format:
+            #   <type> <params> ; <atr>[=<value>],...
+            else:
+                # Parse features
+                if line[0] == 'L':
+                    feat = ODBFeatureLine(line,features_unit)
+                    self.features_list.append(feat)
+                elif line[0] == 'A':
+                    feat = ODBFeatureArc(line,features_unit)
+                    self.features_list.append(feat)
+                elif line[0] == 'P':
+                    feat = ODBFeaturePad(line,features_unit)
+                    self.features_list.append(feat)
+                elif line[0] == 'S':
+                    surf_beg_idxs.append(i)
+                    pass
+                elif line[0] == 'SE':
+                    surf_end_idxs.append(i)
+        
+        # Go through surfaces
+        surf_idxs = list(zip(surf_beg_idxs,surf_end_idxs))
+        for sidxs in surf_idxs:
+            self.features_list.append(ODBFeatureSurface(lines[sidxs[0]:sidxs[1]+1],features_unit))
+        
+        
+        # Parse symbols
+        # print(f'Symbol table:\n{self.symbol_table}\n')
+        # Standard symbols
+        for entry in self.symbol_table:
+            try:
+                symobj = parse_odb_symbol(entry.symbol_name,entry.unit)
+                self.symbol_dict[entry.serial_num] = symobj
+            except ValueError:
+                print(f"Warning: missed symbol {entry.symbol_name}")
+                # pass
+        
+        # User symbols
+        # These are created from the /symbols/ directory with standard symbols and features, so we'll leave them
+        # alone for now. 
+        pass
+    def draw(self,ax):
+        # print(f'Attribute table:\n{self.attr_table}\n')
+        # print(f'Attribute text strings:\n{self.attr_texts}\n')
+        #  Test lines and arcs
+        
+        ax.set_aspect('equal')
+        ax.set_box_aspect(1)
+        for feat in self.features_list:
+            feat.draw(ax,self.symbol_dict)
 
 
 
@@ -1421,132 +1612,7 @@ print(f"Found board thickness: {board_thickness} with unit {ODB_UNIT.name}")
 GLOBAL_CONFIG = ODBConfig(root_name, root_p, ODB_UNIT, ODB_VERSION, matrix, nsteps, nlayers,board_thickness=board_thickness)
 
 
-# %% Parse a features file
-
-class ODBFeatureFile:
-    def __init__(self,fpath: Path):
-        self.symbol_table = []
-        self.symbol_dict = {}
-        self.attr_table = []
-        self.attr_texts = []
-        self.features_list = []
-        
-        
-        if not fpath.exists():
-            raise ValueError(f"File {fpath} does not exist!")
-        lines = []
-        with open(fpath,'r') as f:
-            lines = f.readlines()
-        # Clean
-        lines = [l.strip() for l in lines if l.strip()!='']
-        lines = [re.split(r'[\s\;]',l) for l in lines if not l.startswith('#')]
-        
-        # 0. Get units
-        # In v7 the first line can be "U INCH" or "U MM", with default INCH
-        features_unit = ODB_UNIT
-        features_scale = 1.0#get_unit_conversion(ODB_UNIT,features_unit)  # default to inch
-        if lines[0][0] == ['U']:
-            features_unit = ODBUnit[lines[0][1]]
-            features_scale = get_unit_conversion(unit, ODB_UNIT)  # override if necessary
-        
-        surf_beg_idxs = []
-        surf_end_idxs = []
-        
-        for i,line in enumerate(lines):
-            # 1. Read features - Symbols Table
-            # The symbols table contains the names of all symbols used by the features, with corresponding
-            # serial numbers for reference
-            # Format: $<serial> <symbolname> [I|M]
-            line_unit = features_unit 
-            line_scale = 1.0
-            if line[0].startswith('$'):
-                serial = int(line[0][1:])
-                name = line[1]
-                if len(line) == 3:
-                    line_unit = line[2]
-                    if line_unit == 'I':
-                        line_unit = ODBUnit.MIL
-                    else:
-                        line_unit = ODBUnit.MICRON
-                    line_scale = get_unit_conversion(features_unit, line_unit)
-                entry = ODBSymbolTableEntry(serial,name,line_unit)
-                self.symbol_table.append(entry)
-                
-            
-            # 2. Read features - Attribute Table
-            # The attribute table contains the names of attributes used by the features, with SNs
-            # Line format:
-            #  @<serial> <name>
-            elif line[0].startswith('@'):
-                serial_num = int(line[0][1:])
-                attr_name = line[1]
-                is_system = attr_name.startswith('.')
-                entry = ODBAttributeNameEntry(serial_num, attr_name,is_system)
-                self.attr_table.append(entry)
-            
-            # 3. Read features - Attribute Texts
-            # The attribute texts are lists of text strings with values for text attributes
-            # Line format:
-            #  &<serial> <text>
-            elif line[0].startswith('&'):
-                serial_num = int(line[0][1:])
-                text = ' '.join(line[1:])
-                entry = ODBAttributeStringsEntry(serial_num,text)
-                self.attr_texts.append(entry)
-                
-            
-            # 4. Read features - Features List
-            # The features list contains the features data
-            # Line format:
-            #   <type> <params> ; <atr>[=<value>],...
-            else:
-                # Parse features
-                if line[0] == 'L':
-                    feat = ODBFeatureLine(line)
-                    self.features_list.append(feat)
-                elif line[0] == 'A':
-                    feat = ODBFeatureArc(line)
-                    self.features_list.append(feat)
-                elif line[0] == 'P':
-                    feat = ODBFeaturePad(line)
-                    self.features_list.append(feat)
-                elif line[0] == 'S':
-                    surf_beg_idxs.append(i)
-                    pass
-                elif line[0] == 'SE':
-                    surf_end_idxs.append(i)
-        
-        # Go through surfaces
-        surf_idxs = list(zip(surf_beg_idxs,surf_end_idxs))
-        for sidxs in surf_idxs:
-            self.features_list.append(ODBFeatureSurface(lines[sidxs[0]:sidxs[1]+1]))
-        
-        
-        # Parse symbols
-        # print(f'Symbol table:\n{self.symbol_table}\n')
-        # Standard symbols
-        for entry in self.symbol_table:
-            try:
-                symobj = parse_odb_symbol(entry.symbol_name)
-                self.symbol_dict[entry.serial_num] = symobj
-            except ValueError:
-                print(f"Warning: missed symbol {entry.symbol_name}")
-                # pass
-        
-        # User symbols
-        # These are created from the /symbols/ directory with standard symbols and features, so we'll leave them
-        # alone for now. 
-        pass
-    def draw(self,ax):
-        # print(f'Attribute table:\n{self.attr_table}\n')
-        # print(f'Attribute text strings:\n{self.attr_texts}\n')
-        #  Test lines and arcs
-        
-        ax.set_aspect('equal')
-        ax.set_box_aspect(1)
-        for feat in self.features_list:
-            feat.draw(ax,self.symbol_dict)
-
+# Parse a features file
 
 stepname = GLOBAL_CONFIG.matrix.matrix_steps[0].name
 featpath1 = root_p/f'steps/{stepname}/profile'  # example 1
