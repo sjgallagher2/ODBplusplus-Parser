@@ -17,6 +17,8 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import shapely
 
+from coordinate2 import Coordinate2
+
 # os.path https://docs.python.org/3/library/os.path.html
 #  isdir()
 #  isfile()
@@ -1018,23 +1020,36 @@ class ODBFeatureLine(ODBFeatureBase):
         if len(txt) < 8:  # L + 7 args
             raise ValueError("Line feature does not have enough arguments.")
         self.unit = unit
-        self.xs = float(txt[1])
-        self.ys = float(txt[2])
-        self.xe = float(txt[3])
-        self.ye = float(txt[4])
+        xs = float(txt[1])
+        ys = float(txt[2])
+        self.pt_s = Coordinate2(xs,ys)
+        xe = float(txt[3])
+        ye = float(txt[4])
+        self.pt_e = Coordinate2(xe,ye)
+        
         self.sym_num = int(txt[5])
         self.pol = txt[6]
         self.dcode = int(txt[7])
         self.attrtxt = ''
         if len(txt) > 8:
             self.attrtxt = ' '.join(txt[8:])
+        self.netname = ''     # These can be defined later; netname depends on netlist
+        self.tracewidth = 0   # tracewidth depends on symbol lookup
     
-    def draw(self,ax,sym_dict):
-        # print(f"Line with symbol {sym_dict[self.sym_num]}")
-        ax.plot([self.xs,self.xe],[self.ys,self.ye],'k')
+    def draw(self,ax,sym_dict,*args, **kwargs):
+        xs = self.pt_s.x 
+        ys = self.pt_s.y 
+        xe = self.pt_e.x 
+        ye = self.pt_e.y 
+        ax.plot([xs,xe],[ys,ye],*args, **kwargs)
+    
+    def find_netname(self,netpoints):
+        for netp in netpoints:
+            if self.pt_s == netp.loc or self.pt_e == netp.loc:
+                self.netname = netp.netname
     
     def __repr__(self):
-        return f'ODBFeatureLine(xs={self.xs},ys={self.ys},xe={self.xe},ye={self.ye},sym_num={self.sym_num},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt})'
+        return f'ODBFeatureLine(pt_s={self.pt_s},pt_e={self.pt_e},sym_num={self.sym_num},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt},netname={self.netname},tracewidth={self.tracewidth})'
         
 class ODBFeatureArc(ODBFeatureBase):
     def __init__(self,txt,unit: ODBUnit):
@@ -1054,12 +1069,15 @@ class ODBFeatureArc(ODBFeatureBase):
         self.unit = unit
         if len(txt) < 11:  # A + 10 args
             raise ValueError(f"Arc feature does not have enough arguments: {txt}")
-        self.xs = float(txt[1])
-        self.ys = float(txt[2])
-        self.xe = float(txt[3])
-        self.ye = float(txt[4])
-        self.xc = float(txt[5])
-        self.yc = float(txt[6])
+        xs = float(txt[1])
+        ys = float(txt[2])
+        self.pt_s = Coordinate2(xs,ys)
+        xe = float(txt[3])
+        ye = float(txt[4])
+        self.pt_e = Coordinate2(xe,ye)
+        xc = float(txt[5])
+        yc = float(txt[6])
+        self.pt_c = Coordinate2(xc,yc)
         self.sym_num = int(txt[7])
         self.pol = txt[8]
         self.dcode = int(txt[9])
@@ -1070,28 +1088,27 @@ class ODBFeatureArc(ODBFeatureBase):
         if len(txt) > 11:
             self.attrtxt = ' '.join(txt[11:])
         
-    def draw(self,ax,sym_dict):
-        startvec = complex(self.xs,self.ys)
-        endvec = complex(self.xe,self.ye)
-        centervec = complex(self.xc,self.yc)
-        rad = np.abs(startvec-centervec)  # these should be very close
-        # rad2 = np.abs(endvec-centervec)
-        angle_start_rad = np.angle(startvec-centervec)
-        angle_end_rad = np.angle(endvec-centervec)
+    def draw(self,ax,sym_dict, *args,**kwargs):
+        rad = (self.pt_s-self.pt_c).magnitude()  # these should be very close
+        angle_start_deg = (self.pt_s-self.pt_c).angle(degrees=True)
+        angle_end_deg = (self.pt_e-self.pt_c).angle(degrees=True)
         
         if self.cw:
-            t = np.linspace(angle_end_rad, angle_start_rad + 360,10)
+            arc = mpl.patches.Arc((self.pt_c.x,self.pt_c.y), width=2*rad, height=2*rad, 
+                                  angle=0, theta1=angle_end_deg, theta2=angle_start_deg,color='k',lw=1.5)
         else:
-            t = np.linspace(angle_start_rad, angle_end_rad,10)
-        x = rad*np.cos(t)
-        y = rad*np.sin(t)
-        plt.plot(x,y,'k')
+            arc = mpl.patches.Arc((self.pt_c.x,self.pt_c.y), width=2*rad, height=2*rad, 
+                                  angle=0, theta1=angle_start_deg, theta2=angle_end_deg,color='k',lw=1.5)
         
-        
-        ax.plot([self.xs,self.xe],[self.ys,self.ye],'k')
+        ax.add_patch(arc,*args,**kwargs)
+    
+    def find_netname(self,netpoints):
+        for netp in netpoints:
+            if self.pt_s == netp.loc or self.pt_e == netp.loc:
+                self.netname = netp.netname
     
     def __repr__(self):
-        return f'ODBFeatureArc(xs={self.xs},ys={self.ys},xe={self.xe},ye={self.ye},xc={self.xc},yc={self.yc},sym_num={self.sym_num},pol={self.pol},dcode={self.dcode},cw={self.cw},attrtxt={self.attrtxt})'
+        return f'ODBFeatureArc(pt_s={self.pt_s},pt_e={self.pt_e},pt_c={self.pt_c},sym_num={self.sym_num},pol={self.pol},dcode={self.dcode},cw={self.cw},attrtxt={self.attrtxt})'
 
 
 class ODBFeatureSurface(ODBFeatureBase):
@@ -1507,7 +1524,14 @@ class ODBFeatureFile:
         # User symbols
         # These are created from the /symbols/ directory with standard symbols and features, so we'll leave them
         # alone for now. 
-        pass
+        
+        # Update tracewidths of lines based on symbol
+        for i,feat in enumerate(self.features_list):
+            if isinstance(feat,ODBFeatureLine):
+                sym = self.symbol_dict[feat.sym_num]
+                if isinstance(sym,ODBRoundSymbol):
+                    self.features_list[i].tracewidth = sym.diameter
+        
     def draw(self,ax):
         # print(f'Attribute table:\n{self.attr_table}\n')
         # print(f'Attribute text strings:\n{self.attr_texts}\n')
@@ -1727,9 +1751,9 @@ is_shrink   Y - point size was shrunk to fit solder-mask opening.
 class ODBNetPoint:
     net_num: int
     radius: float
-    x: float
-    y: float 
+    loc: Coordinate2
     side: str
+    netname: str
 
 net_points = []
 for i,line in enumerate(lines):
@@ -1739,7 +1763,7 @@ for i,line in enumerate(lines):
         x = float(line[2])
         y = float(line[3])
         side = line[4]
-        netpt = ODBNetPoint(net_num,radius,x,y,side)
+        netpt = ODBNetPoint(net_num,radius,Coordinate2(x,y),side,netnames_dict[net_num])
         net_points.append(netpt)
 
 
@@ -1747,11 +1771,24 @@ for netp in net_points:
     if netp.side in ['T','B']:  # Top or Both
         ax.annotate(
             netnames_dict[netp.net_num],
-            xy=(netp.x,netp.y),
+            xy=(netp.loc.x,netp.loc.y),
             xytext=(0,0),
             xycoords='data',
             textcoords='offset points',
             ha='center',
             size='8',color='r'
             )
-        
+
+# Process netnames for all lines
+netp = net_points[12]
+netp_name = netnames_dict[netp.net_num]
+for feats in layer_features:
+    if feats.layer_name in my_layers:
+        for feat in feats.features_list:
+            if isinstance(feat,ODBFeatureLine):
+                feat.find_netname(net_points)
+                if feat.netname != '':
+                    print(f'{feat}')
+
+
+
