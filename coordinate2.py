@@ -115,6 +115,9 @@ class Coordinate2:
     
     def __repr__(self):
         return f'({self.x}, {self.y}) [{self.prec}]'
+    
+    def __hash__(self):
+        return hash((self.x,self.y,self.prec))
 
 
 def distance_from_line(P: Coordinate2, LineStart: Coordinate2, LineEnd: Coordinate2):
