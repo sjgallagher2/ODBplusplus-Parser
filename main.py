@@ -1778,7 +1778,6 @@ for netp in net_points:
             ha='center',
             size='8',color='r'
             )
-<<<<<<< HEAD
 
 # Process netnames for all lines
 netp = net_points[12]
@@ -1791,9 +1790,6 @@ for feats in layer_features:
                 if feat.netname != '':
                     print(f'{feat}')
 
-
-
-=======
         
 # %% Make graph of nets and break into subgraphs by name
 tgraph = nx.Graph()
