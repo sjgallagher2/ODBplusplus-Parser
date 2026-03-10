@@ -11,11 +11,13 @@ from dataclasses import dataclass,field
 import re
 from typing import Optional
 import numpy as np
+import networkx as nx  # graph library for mapping nets to lines
 
 # For testing only
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import shapely
+
+from coordinate2 import Coordinate2
 
 from coordinate2 import Coordinate2
 
@@ -1026,7 +1028,6 @@ class ODBFeatureLine(ODBFeatureBase):
         xe = float(txt[3])
         ye = float(txt[4])
         self.pt_e = Coordinate2(xe,ye)
-        
         self.sym_num = int(txt[5])
         self.pol = txt[6]
         self.dcode = int(txt[7])
@@ -1640,23 +1641,22 @@ odbconf = ODBConfig(root_name, root_p, ODB_UNIT, ODB_VERSION, matrix, nsteps, nl
 
 
 # Parse relevant layers
-stepname = odbconf.matrix.matrix_steps[0].name
+stepname = odbconf.matrix.matrix_steps[0].name.lower()
 layer_features = []
 boardoutline_path = root_p/f'steps/{stepname}/profile'  # example 1
 boardoutline_feat = ODBFeatureFile(boardoutline_path,'profile')
 for layer in odbconf.matrix.matrix_layers:
     if layer.layertype in SIMULATION_LAYER_TYPES:
-        featpath = root_p/f'steps/{stepname}/layers/{layer.name}/features'
-        featfile = ODBFeatureFile(featpath,layer.name)
+        featpath = root_p/f'steps/{stepname}/layers/{layer.name.lower()}/features'
+        featfile = ODBFeatureFile(featpath,layer.name.lower())
         layer_features.append(featfile)
 
 fig,ax = plt.subplots(1,1,figsize=(7,7))
 boardoutline_feat.draw(ax)
 my_layers = ['TOP','DRILL']
 for feat in layer_features:
-    if feat.layer_name in my_layers:
+    if feat.layer_name.upper() in my_layers:
         feat.draw(ax)
-        # pass
 
 # Parse netlist
 """
@@ -1778,6 +1778,7 @@ for netp in net_points:
             ha='center',
             size='8',color='r'
             )
+<<<<<<< HEAD
 
 # Process netnames for all lines
 netp = net_points[12]
@@ -1791,4 +1792,185 @@ for feats in layer_features:
                     print(f'{feat}')
 
 
+
+=======
+        
+# %% Make graph of nets and break into subgraphs by name
+tgraph = nx.Graph()
+bgraph = nx.Graph()
+# Nodes are Coordinate2 objects, nets are edges
+
+tlay = layer_features[1]  # 'top'
+blay = layer_features[6]  # 'bottom'
+tlinefeats = [feat for feat in tlay.features_list if isinstance(feat,ODBFeatureLine)]
+blinefeats = [feat for feat in blay.features_list if isinstance(feat,ODBFeatureLine)]
+
+for feat in tlinefeats:
+        p1 = feat.pt_s 
+        p2 = feat.pt_e 
+        if p1.y > 0 and p2.y > 0:
+            tgraph.add_edge(p1,p2)
+
+for feat in blinefeats:
+        p1 = feat.pt_s 
+        p2 = feat.pt_e 
+        if p1.y > 0 and p2.y > 0:
+            bgraph.add_edge(p1,p2)
+
+net_graphs_top = {}
+net_graphs_bot = {}
+for netp in net_points:
+    if netp.side in ['T','B']:
+        pt = Coordinate2(netp.x,netp.y)
+        if pt in tgraph.nodes:
+            netname = netnames_dict[netp.net_num]
+            if netname not in net_graphs_top.keys():
+                # Add the graph of nodes connected to this point to the dict
+                net_graphs_top[netname] = tgraph.subgraph(nx.node_connected_component(tgraph,pt))
+            else:
+                # Union with current, can be the same
+                current_nodes = set(net_graphs_top[netname].nodes)
+                total_nodes = current_nodes.union(nx.node_connected_component(tgraph,pt))
+                net_graphs_top[netname] = tgraph.subgraph(total_nodes)
+
+for netp in net_points:
+    if netp.side in ['D','B']:
+        pt = Coordinate2(netp.x,netp.y)
+        if pt in bgraph.nodes:
+            netname = netnames_dict[netp.net_num]
+            if netname not in net_graphs_bot.keys():
+                # Add the graph of nodes connected to this point to the dict
+                net_graphs_bot[netname] = bgraph.subgraph(nx.node_connected_component(bgraph,pt))
+            else:
+                # Union with current, can be the same
+                current_nodes = set(net_graphs_bot[netname].nodes)
+                total_nodes = current_nodes.union(nx.node_connected_component(bgraph,pt))
+                net_graphs_bot[netname] = bgraph.subgraph(total_nodes)
+
+# %% Plot top layer lines and highlight a diff pair
+fig,ax = plt.subplots()
+ax.set_aspect('equal')
+ax.set_box_aspect(1)
+
+for feat in tlinefeats:
+    p1 = feat.pt_s 
+    p2 = feat.pt_e 
+    if p1.y > 0 and p2.y > 0:
+        if p1 in net_graphs_top['HDMI_TXC+']:
+            feat.draw(ax,tlay.symbol_dict,'r')
+        elif p1 in net_graphs_top['HDMI_TXC-']:
+            feat.draw(ax,tlay.symbol_dict,'b')
+        else:
+            feat.draw(ax,tlay.symbol_dict,'k')
+
+for feat in blinefeats:
+    p1 = feat.pt_s 
+    p2 = feat.pt_e 
+    if p1.y > 0 and p2.y > 0:
+        if p1 in net_graphs_bot['HDMI_TXC+']:
+            feat.draw(ax,blay.symbol_dict,'r:')
+        elif p1 in net_graphs_bot['HDMI_TXC-']:
+            feat.draw(ax,blay.symbol_dict,'b:')
+        # else:
+            # feat.draw(ax,blay.symbol_dict,'k:')
+
+# %% Trace out a diff pair
+# NOTE: For this demo, assume a trace is continuous, and take shortest path
+
+netname1 = 'HDMI_TXC+'
+netname2 = 'HDMI_TXC-'
+g1 = net_graphs_top[netname1]
+g2 = net_graphs_top[netname2]
+
+# Get leaf nodes, the start and end of the chain
+leaf_nodes1 = [n for n,deg in g1.degree() if deg == 1]
+leaf_nodes2 = [n for n,deg in g2.degree() if deg == 1]
+
+# Get shortest path from leaf to leaf
+path1 = nx.shortest_path(g1,source=leaf_nodes1[0],target=leaf_nodes1[1])
+path2 = nx.shortest_path(g2,source=leaf_nodes2[0],target=leaf_nodes2[1])
+print(f'{netname1}:')
+for node in path1:
+    print(f'\t({node.x},{node.y})')
+print(f'{netname2}:')
+for node in path2:
+    print(f'\t({node.x},{node.y})')
+        
+# Plot, with arrows showing order of nodes
+fig,ax = plt.subplots()
+ax.set_aspect('equal')
+ax.set_box_aspect(1)
+for feat in tlinefeats:
+    p1 = feat.pt_s 
+    p2 = feat.pt_e 
+    if p1.y > 0 and p2.y > 0:
+        if p1 in g1:
+            feat.draw(ax,tlay.symbol_dict,'r')
+        elif p1 in g2:
+            feat.draw(ax,tlay.symbol_dict,'b')
+
+for n1,n2 in zip(path1,path1[1:]):
+    ax.annotate("", xytext=(n1.x, n1.y), xy=(n2.x, n2.y),
+            arrowprops=dict(arrowstyle="->"))
+for n1,n2 in zip(path2,path2[1:]):
+    ax.annotate("", xytext=(n1.x, n1.y), xy=(n2.x, n2.y),
+            arrowprops=dict(arrowstyle="->"))
+
+# %% Make something for EMerge
+scale = 25.4  # from in to mm
+# turn segments into vectors (p1,p2)
+vectors1 = list(zip(path1,path1[1:]))
+vectors2 = list(zip(path2,path2[1:]))
+# get magnitudes of each segment
+mags1 = [v[0].distance(v[1])*scale for v in vectors1]
+mags2 = [v[0].distance(v[1])*scale for v in vectors2]
+# get (positive, rounded) angles of each segment
+angles1 = [np.around((v[0]-v[1]).angle(True)) for v in vectors1]
+angles2 = [np.around((v[0]-v[1]).angle(True)) for v in vectors2]
+
+print(f'# {netname1}:')
+# First start with initial coords and direction
+p0 = vectors1[0][0]*scale
+p1 = vectors1[0][1]*scale
+uvec = (p1-p0)/((p1-p0).magnitude())  # unit vector
+print(f"pcb.new(0, 0, w0, ({uvec.x},{uvec.y})).store('p1') \\")
+# commands are .straight(length) and .turn(angle_cw)
+for i in range(len(mags1)):
+    print(f'    .straight({mags1[i]}) \\')  # go straight first, then figure out turn
+    if i < len(mags1)-1:
+        dtheta = angles1[i]-angles1[i+1]
+        if dtheta > 180:
+            dtheta -= 360
+        elif dtheta < -180:
+            dtheta += 360
+        print(f'    .turn({dtheta}) \\')
+print("    .store('p2')")
+
+print(f'# {netname2}:')
+# First start with initial coords and direction
+p2 = vectors2[0][0]*scale
+p3 = vectors2[0][1]*scale
+orig = p2-p0
+uvec = (p3-p2)/((p3-p2).magnitude())  # unit vector
+print(f"pcb.new({orig.x}, {orig.y}, w0, ({uvec.x},{uvec.y})).store('p3') \\")
+for i in range(len(mags2)):
+    print(f'    .straight({mags2[i]}) \\')  # go straight first, then figure out turn
+    if i < len(mags2)-1:
+        dtheta = angles2[i]-angles2[i+1]
+        if dtheta > 180:
+            dtheta -= 360
+        elif dtheta < -180:
+            dtheta += 360
+        print(f'    .turn({dtheta}) \\')
+print("    .store('p4')")
+# %%
+# Get trace width for each segment 
+for feat in tlinefeats:
+    p1 = feat.pt_s 
+    p2 = feat.pt_e 
+    if p1.y > 0 and p2.y > 0:
+        if p1 in g1:
+            print(tlay.symbol_dict[feat.sym_num])
+        elif p1 in g2:
+            print(tlay.symbol_dict[feat.sym_num])
 
