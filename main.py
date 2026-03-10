@@ -106,6 +106,7 @@ class ODBLayerMatrixLayerSolderMaskSubtype(Enum):
     COVERLAY=auto()         # SOLDER_MASK
     LIQUID_PHOTO_IMAGEABLE=auto()  # SOLDER_MASK
 
+
 # BASIC METHODS
 def is_ODB(root: Path):
     """
@@ -633,8 +634,18 @@ gap - size of spoke gap
 lw - line width
 """
 
-# I had ChatGPT take a crack at this to save the effort, since it's all nicely
-# specified.
+# GLOBAL CONFIG
+@dataclass
+class ODBConfig:
+    root_path: Path
+    default_unit: ODBUnit
+    version: float
+    matrix: ODBMatrix
+    nsteps: int
+    nlayers: int
+    board_thickness: float = 0.0
+    user_symbols: dict|None = None  # Name to symbol object
+
 
 class ODBSymbol:
     """Base class for all shapes."""
@@ -647,6 +658,10 @@ class ODBSymbol:
 
 @dataclass
 class ODBRoundSymbol(ODBSymbol):
+    """
+    Round (circle) symbol. Can be used for pads or for line and curve features. For pads, 
+    a getpatch() method is provided which can be plotted with matplotlib.
+    """
     unit: ODBUnit
     diameter: float
 
@@ -657,10 +672,10 @@ class ODBRoundSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit, float(m.group("d")))
-    def getpatch(self, xy, color='k') -> mpl.patches.CirclePolygon:
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.CirclePolygon:
         scale = get_unit_conversion(self.unit,odbconf.default_unit)
-        # patch = mpl.patches.Circle(xy,radius=scale*self.diameter/2.,fill=True,fc=color)
-        patch = mpl.patches.CirclePolygon(xy,radius=scale*self.diameter/2.,resolution=10,fill=True,fc=color)
+        # patch = mpl.patches.Circle(xy,radius=scale*self.diameter/2.,fill=True,fc=color)  # spline circle
+        patch = mpl.patches.CirclePolygon((pos.x,pos.y),radius=scale*self.diameter/2.,resolution=10,fill=True,fc=color)
         return patch
 
 
@@ -676,9 +691,9 @@ class ODBSquareSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("s")))
-    def getpatch(self, xy, color='k') -> mpl.patches.Rectangle:
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.Rectangle:
         scale = get_unit_conversion(self.unit,odbconf.default_unit)
-        xy = (xy[0]-scale*self.side/2, xy[1]-scale*self.side/2)
+        xy = (pos.x-scale*self.side/2, pos.y-scale*self.side/2)
         patch = mpl.patches.Rectangle(xy,width=scale*self.side,height=scale*self.side,fill=True,fc=color)
         return patch
 
@@ -696,9 +711,9 @@ class ODBRectangleSymbol(ODBSymbol):
         if m:
             return symcls(unit,float(m.group("w")), float(m.group("h")))
 
-    def getpatch(self, xy, color='k') -> mpl.patches.Rectangle:
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.Rectangle:
         scale = get_unit_conversion(self.unit,odbconf.default_unit)
-        xy = (xy[0]-scale*self.width/2, xy[1]-scale*self.height/2)
+        xy = (pos.x-scale*self.width/2, pos.y-scale*self.height/2)
         patch = mpl.patches.Rectangle(xy,width=scale*self.width,height=scale*self.height,fill=True,fc=color)
         return patch
 
@@ -712,7 +727,7 @@ class ODBRoundedRectangleSymbol(ODBSymbol):
     width: float
     height: float
     radius: float
-    corners: Optional[str]
+    corners: Optional[str]  # ignored for now
 
     pattern = re.compile(
         r"^rect(?P<w>\d+(?:\.\d+)?)x(?P<h>\d+(?:\.\d+)?)xr(?P<rad>\d+(?:\.\d+)?)(?:x(?P<corners>\w+(?:\.\d+)?))?$"
@@ -729,9 +744,9 @@ class ODBRoundedRectangleSymbol(ODBSymbol):
                 float(m.group("rad")),
                 m.group("corners"),
             )
-    def getpatch(self, xy, color='k') -> mpl.patches.FancyBboxPatch:
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.FancyBboxPatch:
         scale = get_unit_conversion(self.unit,odbconf.default_unit)
-        xy = (xy[0]-scale*self.width/2, xy[1]-scale*self.height/2)
+        xy = (pos.x-scale*self.width/2, pos.y-scale*self.height/2)
         patch = mpl.patches.FancyBboxPatch(xy,width=scale*self.width,height=scale*self.height,
                                            boxstyle=f'Round, pad=0, rounding_size={scale*self.radius}',
                                            fill=True,fc=color)
@@ -760,6 +775,8 @@ class ODBChamferedRectangleSymbol(ODBSymbol):
                 float(m.group("rad")),
                 m.group("corners"),
             )
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
 
 
 # ----------------------------
@@ -768,6 +785,10 @@ class ODBChamferedRectangleSymbol(ODBSymbol):
 
 @dataclass
 class ODBOvalSymbol(ODBSymbol):
+    """
+    An oval is a rounded rectangle where the radius is equal to the shorter dimension. 
+    This creates a pill shape.
+    """
     unit: ODBUnit
     width: float
     height: float
@@ -780,9 +801,9 @@ class ODBOvalSymbol(ODBSymbol):
         if m:
             return symcls(unit,float(m.group("w")), float(m.group("h")))
         
-    def getpatch(self, xy, color='k') -> mpl.patches.FancyBboxPatch:
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.FancyBboxPatch:
         scale = get_unit_conversion(self.unit,odbconf.default_unit)
-        xy = (xy[0]-scale*self.width/2, xy[1]-scale*self.height/2)
+        xy = (pos.x-scale*self.width/2, pos.y-scale*self.height/2)
         
         if self.width > self.height:
             patch = mpl.patches.FancyBboxPatch(xy,width=scale*self.width,height=scale*self.height,
@@ -807,7 +828,9 @@ class ODBDiamondSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("w")), float(m.group("h")))
-
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+    
 
 @dataclass
 class ODBOctagonSymbol(ODBSymbol):
@@ -828,6 +851,8 @@ class ODBOctagonSymbol(ODBSymbol):
                 float(m.group("h")),
                 float(m.group("r"))
             )
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
 
 @dataclass
 class ODBTriangleSymbol(ODBSymbol):
@@ -842,7 +867,8 @@ class ODBTriangleSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("b")), float(m.group("h")))
-
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
 
 @dataclass
 class ODBEllipseSymbol(ODBSymbol):
@@ -857,7 +883,9 @@ class ODBEllipseSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("w")), float(m.group("h")))
-
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+    
 # ----------------------------
 # Donuts
 # ----------------------------
@@ -875,6 +903,8 @@ class ODBRoundDonutSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("od")), float(m.group("id")))
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
 
 
 @dataclass
@@ -890,6 +920,8 @@ class ODBSquareDonutSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("od")), float(m.group("id")))
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
 
 
 @dataclass
@@ -905,6 +937,8 @@ class ODBSquareRoundDonutSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("od")), float(m.group("id")))
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
 
 
 # ----------------------------
@@ -932,6 +966,8 @@ class ODBHoleSymbol(ODBSymbol):
                 float(m.group("tp")),
                 float(m.group("tm"))
             )
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
 
 
 @dataclass
@@ -945,7 +981,129 @@ class ODBNullSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("e")))
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        return None
 
+# -----------------
+# Thermals - Not Implemented Yet
+# -----------------
+
+@dataclass
+class ODBRoundThermalRoundedSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+
+@dataclass
+class ODBRoundThermalSquaredSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+        
+@dataclass
+class ODBSquareThermalSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+
+@dataclass
+class ODBSquareThermalOpenCornersSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+        
+@dataclass
+class ODBSquareRoundThermalSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+        
+@dataclass
+class ODBRectangularThermalSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+        
+@dataclass
+class ODBRectangularThermalOpenCornersSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+
+@dataclass
+class ODBRoundedSquareThermalSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+        
+@dataclass
+class ODBRoundedSquareThermalOpenCornersSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+
+@dataclass
+class ODBRoundedRectangleThermalSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+
+@dataclass
+class ODBRoundedRectangleThermalOpenCornersSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+
+@dataclass
+class ODBOvalThermalSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
+
+@dataclass
+class ODBOvalThermalOpenCornersSymbol(ODBSymbol):
+    unit: ODBUnit 
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        raise NotImplementedError()
+    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
+        raise NotImplementedError()
 
 # ----------------------------
 # Parser / Factory
@@ -967,6 +1125,19 @@ ODBSYMBOL_CLASSES = [
     ODBEllipseSymbol,
     ODBHoleSymbol,
     ODBNullSymbol,
+    ODBRoundThermalRoundedSymbol,
+    ODBRoundThermalSquaredSymbol,
+    ODBSquareThermalSymbol,
+    ODBSquareThermalOpenCornersSymbol,
+    ODBSquareRoundThermalSymbol,
+    ODBRectangularThermalSymbol,
+    ODBRectangularThermalOpenCornersSymbol,
+    ODBRoundedSquareThermalSymbol,
+    ODBRoundedSquareThermalOpenCornersSymbol,
+    ODBRoundedRectangleThermalSymbol,
+    ODBRoundedRectangleThermalOpenCornersSymbol,
+    ODBOvalThermalSymbol,
+    ODBOvalThermalOpenCornersSymbol,
 ]
 
 
@@ -978,9 +1149,14 @@ def parse_odb_symbol(text: str, unit: ODBUnit) -> ODBSymbol:
         if symbol:
             return symbol
 
-    raise ValueError(f"Unknown ODB++ symbopl format: {text}")
+    raise ValueError(f"Unknown or unimplemented ODB++ symbol format: {text}")
 
 
+# PARSING FEATURES
+# Features can lines, pads, arcs, text, barcodes, or surfaces (polygons). 
+# They can be used in multiple contexts, e.g. a line could represent the path of a 
+# net or it could be an edge of the frame of a fab drawing. Things like nets and 
+# ground pours need to be defined at a higher level of abstraction.
 
 @dataclass
 class ODBSymbolTableEntry:
@@ -1037,7 +1213,7 @@ class ODBFeatureLine(ODBFeatureBase):
         self.netname = ''     # These can be defined later; netname depends on netlist
         self.tracewidth = 0   # tracewidth depends on symbol lookup
     
-    def draw(self,ax,sym_dict,*args, **kwargs):
+    def draw(self,ax,sym_dict,odbconf: ODBConfig,*args, **kwargs):
         xs = self.pt_s.x 
         ys = self.pt_s.y 
         xe = self.pt_e.x 
@@ -1089,8 +1265,8 @@ class ODBFeatureArc(ODBFeatureBase):
         if len(txt) > 11:
             self.attrtxt = ' '.join(txt[11:])
         
-    def draw(self,ax,sym_dict, *args,**kwargs):
-        rad = (self.pt_s-self.pt_c).magnitude()  # these should be very close
+    def draw(self,ax,sym_dict,odbconf: ODBConfig, *args,**kwargs):
+        rad = (self.pt_s-self.pt_c).magnitude()  # should be very close to (pt_e - pt_c).magnitude()
         angle_start_deg = (self.pt_s-self.pt_c).angle(degrees=True)
         angle_end_deg = (self.pt_e-self.pt_c).angle(degrees=True)
         
@@ -1135,26 +1311,25 @@ class ODBFeatureSurface(ODBFeatureBase):
     legal curve).
     If any of the above mentioned violations occurs, the system will not be able to read
     the file, and will return an error.
-     The syntax of the polygons description for a surface feature is below
-    
     """
     
     @dataclass
     class ODBSurfacePolyCurve:
-        p2: complex
-        center: complex
+        #p1 : Coordinate2   is actually the previous point
+        p2: Coordinate2
+        center: Coordinate2
         cw: bool
-        def make_arc(self,prev_pt:complex):
+        def make_arc(self,prev_pt:Coordinate2):
             p1 = prev_pt
-            rad = np.abs(p1-self.center)
-            angle_start_deg = np.angle(p1-self.center,deg=True)%360
-            angle_end_deg = np.angle(self.p2-self.center,deg=True)%360
+            rad = (p1-self.center).magnitude()
+            angle_start_deg = (p1-self.center).angle(True)%360
+            angle_end_deg = (self.p2-self.center).angle(True)%360
 
             if self.cw:
-                arc = mpl.patches.Arc((np.real(self.center),np.imag(self.center)), width=2*rad, height=2*rad, 
+                arc = mpl.patches.Arc((self.center.x,self.center.y), width=2*rad, height=2*rad, 
                                       angle=0, theta1=angle_end_deg, theta2=angle_start_deg,color='k',lw=1.5)
             else:
-                arc = mpl.patches.Arc((np.real(self.center),np.imag(self.center)), width=2*rad, height=2*rad, 
+                arc = mpl.patches.Arc((self.center.x,self.center.y), width=2*rad, height=2*rad, 
                                       angle=0, theta1=angle_start_deg, theta2=angle_end_deg,color='k',lw=1.5)
             return arc 
         
@@ -1172,9 +1347,9 @@ class ODBFeatureSurface(ODBFeatureBase):
             self.unit = unit
             if txt_lines[0][0] != 'OB' or txt_lines[-1][0] != 'OE':
                 raise ValueError(f"Could not find start and end of polygon: {txt_lines}")
-            self.xbs = float(txt_lines[0][1])
-            self.ybs = float(txt_lines[0][2])
-            self.bs = complex(self.xbs,self.ybs)
+            xbs = float(txt_lines[0][1])
+            ybs = float(txt_lines[0][2])
+            self.bs = Coordinate2(xbs,ybs)
             ptype = txt_lines[0][3]
             if ptype == 'I':    
                 self.poly_type = ODBFeatureSurface.ODBPolygonType.ISLAND
@@ -1201,7 +1376,7 @@ class ODBFeatureSurface(ODBFeatureBase):
                     x, y            segment end point
                     (previous polygon point is the start point)
                     """
-                    self.segments.append(complex(float(line[1]),float(line[2])))
+                    self.segments.append(Coordinate2(float(line[1]),float(line[2])))
                 elif line[0] == 'OC':
                     """
                     Polygon curve
@@ -1210,8 +1385,8 @@ class ODBFeatureSurface(ODBFeatureBase):
                     xc, yc          curve center point
                     cw              Y for clockwise, N for counter clockwise
                     """
-                    p1 = complex(float(line[1]),float(line[2]))
-                    p2 = complex(float(line[3]),float(line[4]))
+                    p1 = Coordinate2(float(line[1]),float(line[2]))
+                    p2 = Coordinate2(float(line[3]),float(line[4]))
                     cw = False
                     if line[5] == 'Y':
                         cw = True
@@ -1219,7 +1394,7 @@ class ODBFeatureSurface(ODBFeatureBase):
                     self.segments.append(ODBFeatureSurface.ODBSurfacePolyCurve(
                         p1,p2,cw
                         ))
-        def draw(self,ax,sym_dict):
+        def draw(self,ax,sym_dict,odbconf: ODBConfig):
             pts = [self.bs]
             for seg in self.segments:
                 if isinstance(seg,ODBFeatureSurface.ODBSurfacePolyCurve):
@@ -1227,7 +1402,7 @@ class ODBFeatureSurface(ODBFeatureBase):
                     ax.add_patch(arc)
                     pts.append(seg.p2)
                 else:  # line
-                    ax.plot([np.real(pts[-1]),np.real(seg)],[np.imag(pts[-1]),np.imag(seg)],'k')
+                    ax.plot([pts[-1].x,seg.x],[pts[-1].y,seg.y],'k')
                     pts.append(seg)
             
                     
@@ -1264,9 +1439,9 @@ class ODBFeatureSurface(ODBFeatureBase):
         poly_idxs = list(zip(poly_beg_idxs,poly_end_idxs))
         for pidxs in poly_idxs:
             self.polygons.append(ODBFeatureSurface.ODBSurfacePolygon(txt_lines[pidxs[0]:pidxs[1]+1],self.unit))
-    def draw(self,ax,sym_dict):
+    def draw(self,ax,sym_dict,odbconf: ODBConfig):
         for poly in self.polygons:
-            poly.draw(ax,sym_dict)  # NOTE: ignoring polarity
+            poly.draw(ax,sym_dict,odbconf)  # NOTE: ignoring polarity
     def __repr__(self):
         return f'ODBFeatureSurface(polygons={self.polygons},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt})'
 
@@ -1310,8 +1485,9 @@ class ODBFeaturePad(ODBFeatureBase):
         if len(txt) < 7:
             raise ValueError(f"Found incorrect number of arguments for pad. Text: {txt}")
         self.unit = unit
-        self.x = float(txt[1])
-        self.y = float(txt[2])
+        px = float(txt[1])
+        py = float(txt[2])
+        self.p1 = Coordinate2(px,py)
         if txt[3] == '-1':
             # scaled symbol
             self.sym_num = int(txt[4])
@@ -1331,19 +1507,19 @@ class ODBFeaturePad(ODBFeatureBase):
             self.attrtxt = ''
             if len(txt) > 7:
                 self.attrtxt = ' '.join(txt[7:])
-    def draw(self,ax,sym_dict):
+    def draw(self,ax,sym_dict,odbconf: ODBConfig):
         if self.sym_num in sym_dict.keys():
             # For now, only process existing symbols (no user symbols)
             # sym_dict maps serial number to ODBxyzSymbol object
             # if isinstance(sym_dict[self.sym_num],ODBRoundSymbol):
             sym = sym_dict[self.sym_num]
             
-            patch = sym.getpatch((self.x,self.y))
+            patch = sym.getpatch(self.p1,odbconf)
             ax.add_patch(patch)
                 
     
     def __repr__(self):
-        return f'ODBFeaturePad(x={self.x},y={self.y},sym_num={self.sym_num},resize_factor={self.resize_factor},dcode={self.dcode},orient_def={self.orient_def},attrtxt={self.attrtxt})'
+        return f'ODBFeaturePad(p1={self.p1},sym_num={self.sym_num},resize_factor={self.resize_factor},dcode={self.dcode},orient_def={self.orient_def},attrtxt={self.attrtxt})'
 
     
 
@@ -1407,6 +1583,10 @@ class ODBFeatureBarcode(ODBFeatureBase):
 
 
 class ODBFeatureFile:
+    """
+    Represents a file containing features. 
+    
+    """
     def __init__(self,fpath: Path, layer_name: str):
         self.symbol_table = []
         self.symbol_dict = {}
@@ -1429,11 +1609,9 @@ class ODBFeatureFile:
         
         # 0. Get units
         # In v7 the first line can be "U INCH" or "U MM", with default INCH
-        features_unit = ODB_UNIT
-        features_scale = 1.0#get_unit_conversion(ODB_UNIT,features_unit)  # default to inch
+        features_unit = ODBUnit.INCH
         if lines[0][0] == ['U']:
             features_unit = ODBUnit[lines[0][1]]
-            features_scale = get_unit_conversion(unit, ODB_UNIT)  # override if necessary
         
         surf_beg_idxs = []
         surf_end_idxs = []
@@ -1447,7 +1625,6 @@ class ODBFeatureFile:
                 line_unit = ODBUnit.MIL
             else:
                 line_unit = ODBUnit.MICRON
-            line_scale = 1.0
             if line[0].startswith('$'):
                 serial = int(line[0][1:])
                 name = line[1]
@@ -1457,7 +1634,6 @@ class ODBFeatureFile:
                         line_unit = ODBUnit.MIL
                     else:
                         line_unit = ODBUnit.MICRON
-                    line_scale = get_unit_conversion(features_unit, line_unit)
                 entry = ODBSymbolTableEntry(serial,name,line_unit)
                 self.symbol_table.append(entry)
                 
@@ -1524,16 +1700,16 @@ class ODBFeatureFile:
         
         # User symbols
         # These are created from the /symbols/ directory with standard symbols and features, so we'll leave them
-        # alone for now. 
-        
-        # Update tracewidths of lines based on symbol
+        # alone for now. TODO
+
+        # Update widths of lines based on symbol
         for i,feat in enumerate(self.features_list):
             if isinstance(feat,ODBFeatureLine):
                 sym = self.symbol_dict[feat.sym_num]
                 if isinstance(sym,ODBRoundSymbol):
                     self.features_list[i].tracewidth = sym.diameter
-        
-    def draw(self,ax):
+
+    def draw(self,ax,odbconf: ODBConfig):
         # print(f'Attribute table:\n{self.attr_table}\n')
         # print(f'Attribute text strings:\n{self.attr_texts}\n')
         #  Test lines and arcs
@@ -1541,211 +1717,8 @@ class ODBFeatureFile:
         ax.set_aspect('equal')
         ax.set_box_aspect(1)
         for feat in self.features_list:
-            feat.draw(ax,self.symbol_dict)
+            feat.draw(ax,self.symbol_dict,odbconf)
 
-
-
-@dataclass
-class ODBConfig:
-    root_name: str
-    root_path: Path
-    default_unit: ODBUnit
-    version: float
-    matrix: ODBMatrix
-    nsteps: int
-    nlayers: int
-    board_thickness: float = 0.0
-    user_symbols: dict|None = None  # Name to symbol object
-    
-
-# %% Initialize config
-# GLOBAL SETTINGS
-ODB_UNIT = ODBUnit.INCH
-ODB_VERSION = 0.0  # have to parse this from info
-
-# GET BASIC INFO
-root_name = 'examples/beagleboneblack'
-root_p = Path(root_name)
-# 1. Check if this is a valid ODB++ archive
-print(f"Checking if this is an ODB++ archive... {is_ODB(root_p)}\n")
-
-# 2. Parse /matrix/matrix file
-matfile = root_p/'matrix/matrix'
-print("Parsing matrix file... ",end='')
-matrix = ODBMatrix(matfile)
-print("Done.")
-
-# Print summary of matrix
-nsteps = len(matrix.matrix_steps)
-nlayers = len(matrix.matrix_layers)
-print(f'Matrix has {nsteps} step(s) and {nlayers} layers.')
-for step in matrix.matrix_steps:
-    print(f'Step at column {step.col}: {step.name}')
-stepname = ''
-if nsteps == 1:
-    stepname = matrix.matrix_steps[0].name
-
-print("Signal, power, and dielectric layers:")
-for layer in matrix.matrix_layers:
-    if layer.layertype in SIMULATION_LAYER_TYPES:
-        print(f'\t{layer.row} - {layer.name} ({layer.layertype.name}) in context {layer.context.name}')
-
-print("Other layers:")
-for layer in matrix.matrix_layers:
-    if layer.layertype not in SIMULATION_LAYER_TYPES:
-        print(f'\t{layer.row} - {layer.name} ({layer.layertype.name}) in context {layer.context.name}')
-
-
-# 3. Parse info file just in case we want anything from there
-print("\nParsing info file... ",end='')
-infofile = root_p/'misc/info'""
-info_arrs,info_vars = read_structured_text(infofile)  # should only be vars
-print("Done.")
-print("Info variables:")
-odb_ver_maj = ''
-odb_ver_min = ''
-for iv in info_vars:
-    print(f'\t{iv.name}={iv.value}')
-    if iv.name == 'ODB_VERSION_MAJOR':
-        odb_ver_maj = iv.value 
-    elif iv.name == 'ODB_VERSION_MINOR':
-        odb_ver_min = iv.value 
-
-ODB_VERSION = odb_ver_maj+odb_ver_min
-print(f"ODB VERSION: {ODB_VERSION}")
-if ODB_VERSION < 8:
-    ODB_UNIT = ODBUnit.INCH  # update global unit
-
-# 4. Parse attrlist and check for a `.board_thickness` variable
-# NOTE: This depends on ODB version for units. If v7.x, units default to inches, 
-# if v8.0 the UNITS directive must be present
-print("\nParsing attrlist file... ",end='')
-attrlistfile = root_p/'misc/attrlist'""
-attrlist_arrs,attrlist_vars = read_structured_text(attrlistfile)  # should only be vars
-print("Done.")
-
-board_thickness = 0.
-unit = ODB_UNIT
-for alv in attrlist_vars:
-    print(f'\t{alv.name}={alv.value}')
-    if alv.name == 'UNITS':  # only required for v8+
-        unit = ODBUnit[alv.value]
-    elif alv.name == '.board_thickness':
-        scale = get_unit_conversion(unit,ODB_UNIT)
-        board_thickness = float(alv.value)*scale
-
-print(f"Found board thickness: {board_thickness} with unit {ODB_UNIT.name}")
-# NOTE: the UNITS variable is required for v8, but not for v7
-
-odbconf = ODBConfig(root_name, root_p, ODB_UNIT, ODB_VERSION, matrix, nsteps, nlayers,board_thickness=board_thickness)
-
-
-# Parse relevant layers
-stepname = odbconf.matrix.matrix_steps[0].name.lower()
-layer_features = []
-boardoutline_path = root_p/f'steps/{stepname}/profile'  # example 1
-boardoutline_feat = ODBFeatureFile(boardoutline_path,'profile')
-for layer in odbconf.matrix.matrix_layers:
-    if layer.layertype in SIMULATION_LAYER_TYPES:
-        featpath = root_p/f'steps/{stepname}/layers/{layer.name.lower()}/features'
-        featfile = ODBFeatureFile(featpath,layer.name.lower())
-        layer_features.append(featfile)
-
-fig,ax = plt.subplots(1,1,figsize=(7,7))
-boardoutline_feat.draw(ax)
-my_layers = ['TOP','DRILL']
-for feat in layer_features:
-    if feat.layer_name.upper() in my_layers:
-        feat.draw(ax)
-
-# Parse netlist
-"""
-Note: "staggered" = points that were staggered by an algorithm to make them accessible to test probes
-First line:
-    H optimize <y|n>     yes/no to reflect whether the netlist was optimized
-
-"""
-
-# class ODBNetlistFile:
-#     def __init__(self,fpath: Path):
-        # self.netnames = []  # list of (serial, name) tuples
-netnames_dict = {}  # dict from serial to netname
-fpath = odbconf.root_path/f'steps/{stepname}/netlists/cadnet/netlist'
-if not fpath.exists():
-    raise ValueError(f"File {fpath} does not exist!")
-lines = []
-with open(fpath,'r') as f:
-    lines = f.readlines()
-# Clean
-lines = [l.strip() for l in lines if l.strip()!='']
-lines = [re.split(r'[\s\;]',l) for l in lines if not l.startswith('#')]
-if len(lines) == 0:
-    raise ValueError("No length")  # for interactive testing only
-
-# 0. Get optimized/staggered
-# Probably can skip this
-# In v7 the first line is "H optimize <Y|N> [staggered <Y|N>]"
-if lines[0][0] != 'H':
-    raise ValueError(f"Expected first line to start with `H`, found: {lines[0]}")
-
-for i,line in enumerate(lines):
-    if line[0].startswith('$'):
-        serial = int(line[0][1:])
-        name = line[1]
-        # self.netnames.append((serial,name))
-        netnames_dict[serial]=name
-
-"""
-All other lines have the format:
-    <net_num> <radius> <x> <y> <side> [ <w> <h> ] <epoint> <exp> [ <c> ] [staggerred <sx> <sy> <sr>] [v] [f] [t] [m][<x>] [<e>] [<by>]
-
-net_num     The number of the net (start from -1), corresponding to the
-            previously defined netlist section (when a feature does not belong
-            to a net it is defined as $NONE$). Net numbers start from -1
-            (-1 represents a tooling hole).
-radius  Drill radius (inches) or 0.002 for SMD pads
-x,y     point coordinates (inches)
-side    'T' for top, 'D' for bottom, 'B' for both
-w,h     (opt) Width and height of non-drilled pads (only when radius = 0)
-epoint  'e' for net end point, 'm' for net mid point
-exp     'e' for solder mask exposed point
-        'c' for solder mask covered point
-        'p' for solder mask covered primary point on top layer
-        's' for solder mask covered secondary point on bottom layer
-'c'     Comment point
-sx,sy   Coordinates of staggered point
-sr      Radius of staggered point
-v       'v' for a via point
-f       Fiducial point
-t       Test point
-m       Appears when a netlist point is designated as a test point by
-        assigning it the .critical_tp attribute. Normally this is
-        applied to mid-points that need to be tested. The Netlist Optimizer
-        determines mid-points to be not testable unless assigned this
-        attribute. If both .non_tp and .critical_tp are assigned to
-        the same point, .critical_tp takes precedence and the mid
-        point is tested. In case of a drilled pad, the attribute must be
-        added to the drill hole.
-x       ‘eXtended' appears if net point is extended
-e       ‘<Extension>' appears if net point is an extension
-by      { c s b n }
-        c - test from component side
-        s - test from solder side
-        b - test from both sides
-        a - test from any one side.
-        n - side not defined
-        (if <by> value not defined, n is assumed)
-arsize_top  'Annular Ring size for Top' represents the minimum width of
-            exposed copper (from solder mask) around a drill hole on the top
-            outer layer.
-arsize_bot  Same as for arsize_top but for bottom part of the hole.
-            If hole does not go through top / bottom layer, the corresponding
-            parameter (arsize_top / arsize_bot) should not be defined
-            or set to 0. Parameters are keyword parameters and may be
-            placed at any place after the positional ones.
-is_shrink   Y - point size was shrunk to fit solder-mask opening.
-            N - point size is limited only by pad size.
-"""
 
 @dataclass 
 class ODBNetPoint:
@@ -1755,49 +1728,252 @@ class ODBNetPoint:
     side: str
     netname: str
 
-net_points = []
-for i,line in enumerate(lines):
-    if line[0][0] not in ['$','H']:
-        net_num = int(line[0])
-        radius = float(line[1])
-        x = float(line[2])
-        y = float(line[3])
-        side = line[4]
-        netpt = ODBNetPoint(net_num,radius,Coordinate2(x,y),side,netnames_dict[net_num])
-        net_points.append(netpt)
+class ODBNetlistFile:
+    def __init__(self,fpath: Path):
+        """
+        Note: "staggered" = points that were staggered by an algorithm to make them accessible to test probes
+        First line:
+            H optimize <y|n>     yes/no to reflect whether the netlist was optimized
 
-
-for netp in net_points:
-    if netp.side in ['T','B']:  # Top or Both
-        ax.annotate(
-            netnames_dict[netp.net_num],
-            xy=(netp.loc.x,netp.loc.y),
-            xytext=(0,0),
-            xycoords='data',
-            textcoords='offset points',
-            ha='center',
-            size='8',color='r'
-            )
-
-# Process netnames for all lines
-# netp = net_points[12]
-# netp_name = netnames_dict[netp.net_num]
-# for feats in layer_features:
-#     if feats.layer_name in my_layers:
-#         for feat in feats.features_list:
-#             if isinstance(feat,ODBFeatureLine):
-#                 feat.find_netname(net_points)
-#                 if feat.netname != '':
-#                     print(f'{feat}')
-
+        """
+        self.netnames_dict = {}  # dict from serial to netname
+        self.net_points = []     # list of ODBNetPoint objects representing the location and radius of a net testpoint
+        if not fpath.exists():
+            raise ValueError(f"File {fpath} does not exist!")
+        lines = []
+        with open(fpath,'r') as f:
+            lines = f.readlines()
+        # Clean
+        lines = [l.strip() for l in lines if l.strip()!='']
+        lines = [re.split(r'[\s\;]',l) for l in lines if not l.startswith('#')]
+        if len(lines) == 0:
+            raise ValueError("No length")  # for interactive testing only
         
-# %% Make graph of nets and break into subgraphs by name
+        # 0. Get optimized/staggered
+        # Probably can skip this
+        # In v7 the first line is "H optimize <Y|N> [staggered <Y|N>]"
+        if lines[0][0] != 'H':
+            raise ValueError(f"Expected first line to start with `H`, found: {lines[0]}")
+        
+        for i,line in enumerate(lines):
+            if line[0].startswith('$'):
+                serial = int(line[0][1:])
+                name = line[1]
+                # self.netnames.append((serial,name))
+                self.netnames_dict[serial]=name
+        
+        """
+        All other lines have the format:
+            <net_num> <radius> <x> <y> <side> [ <w> <h> ] <epoint> <exp> [ <c> ] [staggerred <sx> <sy> <sr>] [v] [f] [t] [m][<x>] [<e>] [<by>]
+        
+        net_num     The number of the net (start from -1), corresponding to the
+                    previously defined netlist section (when a feature does not belong
+                    to a net it is defined as $NONE$). Net numbers start from -1
+                    (-1 represents a tooling hole).
+        radius  Drill radius (inches) or 0.002 for SMD pads
+        x,y     point coordinates (inches)
+        side    'T' for top, 'D' for bottom, 'B' for both
+        w,h     (opt) Width and height of non-drilled pads (only when radius = 0)
+        epoint  'e' for net end point, 'm' for net mid point
+        exp     'e' for solder mask exposed point
+                'c' for solder mask covered point
+                'p' for solder mask covered primary point on top layer
+                's' for solder mask covered secondary point on bottom layer
+        'c'     Comment point
+        sx,sy   Coordinates of staggered point
+        sr      Radius of staggered point
+        v       'v' for a via point
+        f       Fiducial point
+        t       Test point
+        m       Appears when a netlist point is designated as a test point by
+                assigning it the .critical_tp attribute. Normally this is
+                applied to mid-points that need to be tested. The Netlist Optimizer
+                determines mid-points to be not testable unless assigned this
+                attribute. If both .non_tp and .critical_tp are assigned to
+                the same point, .critical_tp takes precedence and the mid
+                point is tested. In case of a drilled pad, the attribute must be
+                added to the drill hole.
+        x       ‘eXtended' appears if net point is extended
+        e       ‘<Extension>' appears if net point is an extension
+        by      { c s b n }
+                c - test from component side
+                s - test from solder side
+                b - test from both sides
+                a - test from any one side.
+                n - side not defined
+                (if <by> value not defined, n is assumed)
+        arsize_top  'Annular Ring size for Top' represents the minimum width of
+                    exposed copper (from solder mask) around a drill hole on the top
+                    outer layer.
+        arsize_bot  Same as for arsize_top but for bottom part of the hole.
+                    If hole does not go through top / bottom layer, the corresponding
+                    parameter (arsize_top / arsize_bot) should not be defined
+                    or set to 0. Parameters are keyword parameters and may be
+                    placed at any place after the positional ones.
+        is_shrink   Y - point size was shrunk to fit solder-mask opening.
+                    N - point size is limited only by pad size.
+        """
+        
+        # We're going to just extract the location for now. TODO.
+        for i,line in enumerate(lines):
+            if line[0][0] not in ['$','H']:
+                net_num = int(line[0])
+                radius = float(line[1])
+                x = float(line[2])
+                y = float(line[3])
+                side = line[4]
+                netpt = ODBNetPoint(net_num,radius,Coordinate2(x,y),side,self.netnames_dict[net_num])
+                self.net_points.append(netpt)
+        
+        
+        for netp in self.net_points:
+            if netp.side in ['T','B']:  # Top or Both
+                ax.annotate(
+                    self.netnames_dict[netp.net_num],
+                    xy=(netp.loc.x,netp.loc.y),
+                    xytext=(0,0),
+                    xycoords='data',
+                    textcoords='offset points',
+                    ha='center',
+                    size='8',color='r'
+                    )
+
+
+
+def load_ODB(root_p: Path,verbose = True) -> ODBConfig:
+    """
+    Given the path to the ODB++ root directory (uncompressed), verify info and create
+    an ODBConfig object. 
+    """
+    ODB_UNIT = ODBUnit.INCH
+    ODB_VERSION = 0.0  # have to parse this from info
+    
+    # GET BASIC INFO
+    # 1. Check if this is a valid ODB++ archive
+    if verbose:
+        print(f"Checking if this is an ODB++ archive... {is_ODB(root_p)}\n")
+    
+    # 2. Parse /matrix/matrix file
+    matfile = root_p/'matrix/matrix'
+    if verbose:
+        print("Parsing matrix file... ",end='')
+    matrix = ODBMatrix(matfile)
+    if verbose:
+        print("Done.")
+    
+    # Print summary of matrix
+    nsteps = len(matrix.matrix_steps)
+    nlayers = len(matrix.matrix_layers)
+    if verbose:
+        print(f'Matrix has {nsteps} step(s) and {nlayers} layers.')
+    for step in matrix.matrix_steps:
+        if verbose:
+            print(f'Step at column {step.col}: {step.name}')
+    
+    if verbose:
+        print("Signal, power, and dielectric layers:")
+    for layer in matrix.matrix_layers:
+        if layer.layertype in SIMULATION_LAYER_TYPES:
+            if verbose:
+                print(f'\t{layer.row} - {layer.name} ({layer.layertype.name}) in context {layer.context.name}')
+    
+    if verbose:
+        print("Other layers:")
+    for layer in matrix.matrix_layers:
+        if layer.layertype not in SIMULATION_LAYER_TYPES:
+            if verbose:
+                print(f'\t{layer.row} - {layer.name} ({layer.layertype.name}) in context {layer.context.name}')
+    
+    
+    # 3. Parse info file for ODB version
+    if verbose:
+        print("\nParsing info file... ",end='')
+    infofile = root_p/'misc/info'""
+    info_arrs,info_vars = read_structured_text(infofile)  # should only be vars
+    if verbose:
+        print("Done.")
+    if verbose:
+        print("Info variables:")
+    odb_ver_maj = ''
+    odb_ver_min = ''
+    for iv in info_vars:
+        if verbose:
+            print(f'\t{iv.name}={iv.value}')
+        if iv.name == 'ODB_VERSION_MAJOR':
+            odb_ver_maj = iv.value 
+        elif iv.name == 'ODB_VERSION_MINOR':
+            odb_ver_min = iv.value 
+    
+    ODB_VERSION = odb_ver_maj+odb_ver_min
+    if verbose:
+        print(f"ODB VERSION: {ODB_VERSION}")
+    if ODB_VERSION < 8:
+        ODB_UNIT = ODBUnit.INCH  # update global unit
+    
+    # 4. Parse attrlist and check for a `.board_thickness` variable
+    # NOTE: This depends on ODB version for units. If v7.x, units default to inches, 
+    # if v8.0 the UNITS directive must be present
+    if verbose:
+        print("\nParsing attrlist file... ",end='')
+    attrlistfile = root_p/'misc/attrlist'""
+    attrlist_arrs,attrlist_vars = read_structured_text(attrlistfile)  # should only be vars
+    if verbose:
+        print("Done.")
+    
+    board_thickness = 0.
+    unit = ODB_UNIT
+    for alv in attrlist_vars:
+        if verbose:
+            print(f'\t{alv.name}={alv.value}')
+        if alv.name == 'UNITS':  # only required for v8+
+            unit = ODBUnit[alv.value]
+        elif alv.name == '.board_thickness':
+            scale = get_unit_conversion(unit,ODB_UNIT)
+            board_thickness = float(alv.value)*scale
+    
+    if verbose:
+        print(f"Found board thickness: {board_thickness} with unit {ODB_UNIT.name}")
+    # NOTE: the UNITS variable is required for v8, but not for v7
+    
+    odbconf = ODBConfig(root_p, ODB_UNIT, ODB_VERSION, matrix, nsteps, nlayers,board_thickness=board_thickness)
+    return odbconf
+
+# %%
+root_name = 'examples/beagleboneblack'
+root_p = Path(root_name)
+odbconf = load_ODB(root_p)
+
+# Parse relevant layers into `layer_features` list
+# NOTE - Some funny business here with the uppercase/lowercase. TODO
+stepname = odbconf.matrix.matrix_steps[0].name.lower()
+layer_features = {}  # List of features files for different layers
+boardoutline_path = root_p/f'steps/{stepname}/profile'  # example 1
+boardoutline_feat = ODBFeatureFile(boardoutline_path,'profile')
+for layer in odbconf.matrix.matrix_layers:
+    if layer.layertype in SIMULATION_LAYER_TYPES:
+        featpath = root_p/f'steps/{stepname}/layers/{layer.name.lower()}/features'
+        featfile = ODBFeatureFile(featpath,layer.name.lower())
+        layer_features[layer.name.lower()] = featfile
+
+fig,ax = plt.subplots(1,1,figsize=(7,7))
+boardoutline_feat.draw(ax,odbconf)
+my_layers = ['TOP','DRILL']
+for layname,feat in layer_features.items():
+    if layname.upper() in my_layers:
+        feat.draw(ax,odbconf)
+
+# Parse netlist file
+fpath = odbconf.root_path/f'steps/{stepname}/netlists/cadnet/netlist'
+netlistfile = ODBNetlistFile(fpath)
+
+# ------------------------------------
+# Make graph of nets and break into subgraphs by name
 tgraph = nx.Graph()
 bgraph = nx.Graph()
 # Nodes are Coordinate2 objects, nets are edges
 
-tlay = layer_features[1]  # 'top'
-blay = layer_features[6]  # 'bottom'
+tlay = layer_features['top']  # 'top'
+blay = layer_features['bottom']  # 'bottom'
 tlinefeats = [feat for feat in tlay.features_list if isinstance(feat,ODBFeatureLine)]
 blinefeats = [feat for feat in blay.features_list if isinstance(feat,ODBFeatureLine)]
 
@@ -1815,11 +1991,11 @@ for feat in blinefeats:
 
 net_graphs_top = {}
 net_graphs_bot = {}
-for netp in net_points:
+for netp in netlistfile.net_points:
     if netp.side in ['T','B']:
         pt = Coordinate2(netp.loc.x,netp.loc.y)
         if pt in tgraph.nodes:
-            netname = netnames_dict[netp.net_num]
+            netname = netlistfile.netnames_dict[netp.net_num]
             if netname not in net_graphs_top.keys():
                 # Add the graph of nodes connected to this point to the dict
                 net_graphs_top[netname] = tgraph.subgraph(nx.node_connected_component(tgraph,pt))
@@ -1829,11 +2005,11 @@ for netp in net_points:
                 total_nodes = current_nodes.union(nx.node_connected_component(tgraph,pt))
                 net_graphs_top[netname] = tgraph.subgraph(total_nodes)
 
-for netp in net_points:
+for netp in netlistfile.net_points:
     if netp.side in ['D','B']:
         pt = Coordinate2(netp.loc.x,netp.loc.y)
         if pt in bgraph.nodes:
-            netname = netnames_dict[netp.net_num]
+            netname = netlistfile.netnames_dict[netp.net_num]
             if netname not in net_graphs_bot.keys():
                 # Add the graph of nodes connected to this point to the dict
                 net_graphs_bot[netname] = bgraph.subgraph(nx.node_connected_component(bgraph,pt))
@@ -1853,22 +2029,22 @@ for feat in tlinefeats:
     p2 = feat.pt_e 
     if p1.y > 0 and p2.y > 0:
         if p1 in net_graphs_top['HDMI_TXC+']:
-            feat.draw(ax,tlay.symbol_dict,'r')
+            feat.draw(ax,tlay.symbol_dict,odbconf,'r')
         elif p1 in net_graphs_top['HDMI_TXC-']:
-            feat.draw(ax,tlay.symbol_dict,'b')
+            feat.draw(ax,tlay.symbol_dict,odbconf,'b')
         else:
-            feat.draw(ax,tlay.symbol_dict,'k')
+            feat.draw(ax,tlay.symbol_dict,odbconf,'k')
 
 for feat in blinefeats:
     p1 = feat.pt_s 
     p2 = feat.pt_e 
     if p1.y > 0 and p2.y > 0:
         if p1 in net_graphs_bot['HDMI_TXC+']:
-            feat.draw(ax,blay.symbol_dict,'r:')
+            feat.draw(ax,blay.symbol_dict,odbconf,'r:')
         elif p1 in net_graphs_bot['HDMI_TXC-']:
-            feat.draw(ax,blay.symbol_dict,'b:')
+            feat.draw(ax,blay.symbol_dict,odbconf,'b:')
         # else:
-            # feat.draw(ax,blay.symbol_dict,'k:')
+            # feat.draw(ax,blay.symbol_dict,odbconf,'k:')
 
 # %% Trace out a diff pair
 # NOTE: For this demo, assume a trace is continuous, and take shortest path
@@ -1901,9 +2077,9 @@ for feat in tlinefeats:
     p2 = feat.pt_e 
     if p1.y > 0 and p2.y > 0:
         if p1 in g1:
-            feat.draw(ax,tlay.symbol_dict,'r')
+            feat.draw(ax,tlay.symbol_dict,odbconf,'r')
         elif p1 in g2:
-            feat.draw(ax,tlay.symbol_dict,'b')
+            feat.draw(ax,tlay.symbol_dict,odbconf,'b')
 
 for n1,n2 in zip(path1,path1[1:]):
     ax.annotate("", xytext=(n1.x, n1.y), xy=(n2.x, n2.y),
