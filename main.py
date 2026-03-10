@@ -1871,11 +1871,72 @@ for feat in tlinefeats:
             feat.draw(ax,tlay.symbol_dict,'r')
         elif p1 in g2:
             feat.draw(ax,tlay.symbol_dict,'b')
-# arrows
+
 for n1,n2 in zip(path1,path1[1:]):
     ax.annotate("", xytext=(n1.x, n1.y), xy=(n2.x, n2.y),
             arrowprops=dict(arrowstyle="->"))
 for n1,n2 in zip(path2,path2[1:]):
     ax.annotate("", xytext=(n1.x, n1.y), xy=(n2.x, n2.y),
             arrowprops=dict(arrowstyle="->"))
-    
+
+# %% Make something for EMerge
+scale = 25.4  # from in to mm
+# turn segments into vectors (p1,p2)
+vectors1 = list(zip(path1,path1[1:]))
+vectors2 = list(zip(path2,path2[1:]))
+# get magnitudes of each segment
+mags1 = [v[0].distance(v[1])*scale for v in vectors1]
+mags2 = [v[0].distance(v[1])*scale for v in vectors2]
+# get (positive, rounded) angles of each segment
+angles1 = [np.around((v[0]-v[1]).angle(True)) for v in vectors1]
+angles2 = [np.around((v[0]-v[1]).angle(True)) for v in vectors2]
+
+print(f'# {netname1}:')
+# First start with initial coords and direction
+p0 = vectors1[0][0]*scale
+p1 = vectors1[0][1]*scale
+uvec = (p1-p0)/((p1-p0).magnitude())  # unit vector
+print(f"pcb.new(0, 0, w0, ({uvec.x},{uvec.y})).store('p1') \\")
+# commands are .straight(length) and .turn(angle_cw)
+for i in range(len(mags1)):
+    print(f'    .straight({mags1[i]}) \\')  # go straight first, then figure out turn
+    if i < len(mags1)-1:
+        dtheta = angles1[i]-angles1[i+1]
+        if dtheta > 180:
+            dtheta -= 360
+        elif dtheta < -180:
+            dtheta += 360
+        print(f'    .turn({dtheta}) \\')
+print("    .store('p2')")
+
+print(f'# {netname2}:')
+# First start with initial coords and direction
+p2 = vectors2[0][0]*scale
+p3 = vectors2[0][1]*scale
+orig = p2-p0
+uvec = (p3-p2)/((p3-p2).magnitude())  # unit vector
+print(f"pcb.new({orig.x}, {orig.y}, w0, ({uvec.x},{uvec.y})).store('p3') \\")
+for i in range(len(mags2)):
+    print(f'    .straight({mags2[i]}) \\')  # go straight first, then figure out turn
+    if i < len(mags2)-1:
+        dtheta = angles2[i]-angles2[i+1]
+        if dtheta > 180:
+            dtheta -= 360
+        elif dtheta < -180:
+            dtheta += 360
+        print(f'    .turn({dtheta}) \\')
+print("    .store('p4')")
+# %%
+# Get trace width for each segment 
+for feat in tlinefeats:
+    p1 = feat.pt_s 
+    p2 = feat.pt_e 
+    if p1.y > 0 and p2.y > 0:
+        if p1 in g1:
+            print(tlay.symbol_dict[feat.sym_num])
+        elif p1 in g2:
+            print(tlay.symbol_dict[feat.sym_num])
+
+
+
+            
