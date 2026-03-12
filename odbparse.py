@@ -1220,7 +1220,8 @@ def parse_odb_symbol(text: str, unit: ODBUnit) -> ODBSymbol:
         try:
             symbol = symcls.parse(text,unit)
         except NotImplementedError:
-            print(f"Warning: Symbol {text} not implemented.")
+            # print(f"Warning: Symbol {symcls} not implemented.")
+            pass
         if symbol:
             return symbol
 
@@ -1284,7 +1285,7 @@ class ODBFeatureLine(ODBFeatureBase):
         self.dcode = int(txt[7])
         self.attrtxt = ''
         if len(txt) > 8:
-            self.attrtxt = ' '.join(txt[8:])
+            self.attrtxt = ' '.join(txt[8:])  # TODO Parse attrtext
         self.netname = ''     # These can be defined later; netname depends on netlist
         self.tracewidth = 0   # tracewidth depends on symbol lookup
     
@@ -1299,6 +1300,16 @@ class ODBFeatureLine(ODBFeatureBase):
         for netp in netpoints:
             if self.pt_s == netp.loc or self.pt_e == netp.loc:
                 self.netname = netp.netname
+    
+    def getpatches(self,sym_dict,odbconf: ODBConfig, pos_offset: Coordinate2 = Coordinate2(0,0), **patchkwargs) -> list[mpl.patches.Patch]:
+        MOVETO = mpl.path.Path.MOVETO
+        LINETO = mpl.path.Path.LINETO
+        vtxs = [(self.pt_s.x,self.pt_s.y), (self.pt_e.x,self.pt_e.y)]
+        codes = [MOVETO,LINETO]
+        linepath = mpl.path.Path(vtxs,codes)
+        patch = mpl.patches.PathPatch(linepath,**patchkwargs)
+        return [patch]
+        
     
     def __repr__(self):
         return f'ODBFeatureLine(pt_s={self.pt_s},pt_e={self.pt_e},sym_num={self.sym_num},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt},netname={self.netname},tracewidth={self.tracewidth})'
@@ -1339,8 +1350,8 @@ class ODBFeatureArc(ODBFeatureBase):
         self.attrtxt = ''
         if len(txt) > 11:
             self.attrtxt = ' '.join(txt[11:])
-        
-    def draw(self,ax,sym_dict,odbconf: ODBConfig, *args,**kwargs):
+    
+    def getpatches(self,sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs) -> list[mpl.patches.Patch]:
         rad = (self.pt_s-self.pt_c).magnitude()  # should be very close to (pt_e - pt_c).magnitude()
         angle_start_deg = (self.pt_s-self.pt_c).angle(degrees=True)
         angle_end_deg = (self.pt_e-self.pt_c).angle(degrees=True)
@@ -1351,8 +1362,11 @@ class ODBFeatureArc(ODBFeatureBase):
         else:
             arc = mpl.patches.Arc((self.pt_c.x,self.pt_c.y), width=2*rad, height=2*rad, 
                                   angle=0, theta1=angle_start_deg, theta2=angle_end_deg,color='k',lw=1.5)
-        
-        arc.set(**kwargs)
+        arc.set(**patchkwargs)
+        return [arc]
+    
+    def draw(self,ax,sym_dict,odbconf: ODBConfig,**patchkwargs):
+        arc = self.getpatches(sym_dict,odbconf,**patchkwargs)[0]
         ax.add_patch(arc)
     
     def find_netname(self,netpoints):
@@ -1472,7 +1486,7 @@ class ODBFeatureSurface(ODBFeatureBase):
                     self.segments.append(ODBFeatureSurface.ODBSurfacePolyCurve(
                         p1,p2,cw
                         ))
-        def getpatch(self, odbconf: ODBConfig, **kwargs) -> mpl.patches.PathPatch:
+        def getpatch(self, odbconf: ODBConfig, pos_offset: Coordinate2 = Coordinate2(0,0), **patchkwargs) -> mpl.patches.PathPatch:
             # Need to construct an mpl.path.Path()
             # This requires converting curves to quadratic or cubic Bezier curves
             # Curves are given by center, start, and end. 
@@ -1480,24 +1494,72 @@ class ODBFeatureSurface(ODBFeatureBase):
             LINETO = mpl.path.Path.LINETO
             CURVE4 = mpl.path.Path.CURVE4
             
+            x0 = pos_offset
+            
             # Initialize at start
-            vtxs = [(self.bs.x,self.bs.y)]
+            vtxs = [(self.bs.x+x0.x,self.bs.y+x0.y)]
             codes = [MOVETO]
             
             for seg in self.segments:
                 if isinstance(seg,ODBFeatureSurface.ODBSurfacePolyCurve):
+                    # vtxs are in translated coordinates, segment is in original coordinates
+                    if x0 != Coordinate2(0,0):
+                        print(f"Getting curvy polygon with nonzero position: {x0}")
                     p1 = Coordinate2(vtxs[-1][0],vtxs[-1][1])
-                    rad = (p1-seg.center).magnitude()
-                    angle_start_deg = (p1-seg.center).angle(True)%360
-                    angle_end_deg = (seg.p2-seg.center).angle(True)%360
-                    arc_vtxs,arc_codes = circular_arc_to_path(seg.center, rad, angle_start_deg, angle_end_deg,seg.cw)
-                    vtxs += arc_vtxs
-                    codes += arc_codes
+                    p2 = seg.p2 + x0
+                    segcenter = seg.center + x0
+                    rad = (p1-segcenter).magnitude()
+                    angle_start_deg = (p1-segcenter).angle(True)%360
+                    angle_end_deg = (p2-segcenter).angle(True)%360
+                    
+                    # Check if we need to break the arc up into smaller (<= 90 degrees) segments
+                    if seg.cw:
+                        angle_span = (angle_start_deg - angle_end_deg)
+                    else:
+                        angle_span = (angle_end_deg - angle_start_deg)
+
+                    if angle_span < 0:
+                        angle_span += 360  # Positive only
+
+                    if angle_span > 180:
+                        # Break up into segments <= 90 degrees
+                        start_angles = []
+                        end_angles = []
+                        next_angle = angle_start_deg
+                        timeout = 10
+                        if seg.cw:
+                            # Angles decrease to angle_start_deg-angle_span
+                            while next_angle > (angle_start_deg - angle_span) and timeout > 0:
+                                start_angles.append(next_angle)
+                                next_angle = start_angles[-1] - 90
+                                end_angles.append(next_angle)
+                                timeout -= 1
+                            end_angles[-1] = angle_start_deg - angle_span
+                        else:
+                            # Angles increase to angle_start_deg+angle_span
+                            while next_angle < (angle_start_deg + angle_span) and timeout > 0:
+                                start_angles.append(next_angle)
+                                next_angle = start_angles[-1] + 90
+                                end_angles.append(next_angle)
+                                timeout -= 1
+                            end_angles[-1] = angle_start_deg + angle_span
+                        
+                        # Now generate arcs from start_angle to end_angle for each
+                        for i in range(len(start_angles)):
+                            arc_vtxs,arc_codes = circular_arc_to_path(segcenter, rad, start_angles[i], end_angles[i],seg.cw)
+                            vtxs += arc_vtxs
+                            codes += arc_codes
+                            
+                        
+                    else:                    
+                        arc_vtxs,arc_codes = circular_arc_to_path(segcenter, rad, angle_start_deg, angle_end_deg,seg.cw)
+                        vtxs += arc_vtxs
+                        codes += arc_codes
                 else:  # line
-                    vtxs.append((seg.x,seg.y))
+                    vtxs.append((seg.x + x0.x,seg.y + x0.y))
                     codes.append(LINETO)
             mplpath = mpl.path.Path(vtxs,codes)
-            patch = mpl.patches.PathPatch(mplpath,**kwargs)
+            patch = mpl.patches.PathPatch(mplpath,**patchkwargs)
             return patch
         
         def __repr__(self):
@@ -1533,9 +1595,15 @@ class ODBFeatureSurface(ODBFeatureBase):
         poly_idxs = list(zip(poly_beg_idxs,poly_end_idxs))
         for pidxs in poly_idxs:
             self.polygons.append(ODBFeatureSurface.ODBSurfacePolygon(txt_lines[pidxs[0]:pidxs[1]+1],self.unit))
-    def draw(self,ax,sym_dict,odbconf: ODBConfig,*args, **kwargs):
+    def draw(self,ax,sym_dict,odbconf: ODBConfig, **patchkwargs):
         for poly in self.polygons:
-            ax.add_patch(poly.getpatch(odbconf,*args, **kwargs))  # NOTE: ignoring polarity for now, TODO
+            ax.add_patch(poly.getpatch(odbconf, **patchkwargs))  # NOTE: ignoring polarity for now, TODO
+    def getpatches(self,sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs) -> list[mpl.patches.Patch]:
+        patches = []
+        for poly in self.polygons:
+            patches.append(poly.getpatch(odbconf,pos_offset,**patchkwargs))  # NOTE: ignoring polarity for now, TODO
+        return patches
+            
     def __repr__(self):
         return f'ODBFeatureSurface(polygons={self.polygons},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt})'
 
@@ -1601,18 +1669,31 @@ class ODBFeaturePad(ODBFeatureBase):
             self.attrtxt = ''
             if len(txt) > 7:
                 self.attrtxt = ' '.join(txt[7:])
-    def draw(self,ax,sym_dict,odbconf: ODBConfig,*args, **kwargs):
+    
+    def getpatches(self,sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs) -> list[mpl.patches.Patch]:
         if self.sym_num in sym_dict.keys():
             # For now, only process existing symbols (no user symbols)
             # sym_dict maps serial number to ODBxyzSymbol object
             # if isinstance(sym_dict[self.sym_num],ODBRoundSymbol):
+            # TODO include orient_def for pad angle
             sym = sym_dict[self.sym_num]
-            
-            patch = sym.getpatch(self.p1,odbconf)
-            patch.set(**kwargs)
-            ax.add_patch(patch)
-
+            if isinstance(sym,ODBUserSymbol):
+                patches = sym.getpatches(self.p1,**patchkwargs)  # ODBUserSymbol handles its own position offset
+                return patches
+            else:
+                patch = sym.getpatch(self.p1+pos_offset,odbconf)
+                patch.set(**patchkwargs)
+                return [patch]          # make into list
     
+    def draw(self,ax,sym_dict,odbconf: ODBConfig,**patchkwargs):        
+        patches = self.getpatches(sym_dict,odbconf,**patchkwargs)
+        if patches is not None:
+            for patch in patches:
+                ax.add_patch(patch)
+        else:
+            # print(f"WARNING: Empty patches for symbol {sym_dict[self.sym_num]}")
+            pass
+
     def __repr__(self):
         return f'ODBFeaturePad(p1={self.p1},sym_num={self.sym_num},resize_factor={self.resize_factor},dcode={self.dcode},orient_def={self.orient_def},attrtxt={self.attrtxt})'
 
@@ -1690,6 +1771,7 @@ class ODBFeatureFile:
         self.attr_texts = []
         self.features_list = []
         self.odbconf = odbconf
+        self.has_user_symbols = False
         
         
         if not fpath.exists():
@@ -1791,12 +1873,12 @@ class ODBFeatureFile:
                 symobj = parse_odb_symbol(entry.symbol_name,entry.unit)
                 self.symbol_dict[entry.serial_num] = symobj
             except ValueError:
-                print(f"Warning: missed symbol {entry.symbol_name}")
-                # pass
+                # print(f"Warning: missed symbol {entry.symbol_name}")
+                pass
         
         # User symbols
-        # These are created from the /symbols/ directory with standard symbols and features, so we'll leave them
-        # alone for now. TODO
+        # These are created from the /symbols/ directory with standard symbols and features.
+        # These are FeatureFiles themselves, so they need to be parsed outside of __init__().
 
         # Update widths of lines based on symbol
         for i,feat in enumerate(self.features_list):
@@ -1804,12 +1886,25 @@ class ODBFeatureFile:
                 sym = self.symbol_dict[feat.sym_num]
                 if isinstance(sym,ODBRoundSymbol):
                     self.features_list[i].tracewidth = sym.diameter
+    
+    def add_user_symbols(self,user_sym_dict):
+        if len(user_sym_dict) > 0:
+            for entry in self.symbol_table:
+                if entry.symbol_name in user_sym_dict.keys():                   
+                    self.symbol_dict[entry.serial_num] = user_sym_dict[entry.symbol_name]
+        self.has_user_symbols = True
+    
+    def getpatches(self,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs) -> list[mpl.patches.Patch]:
+        patches = []
+        if 'pos_offset' in patchkwargs.keys():
+            patchkwargs['pos_offset'] = pos_offset
+        for feat in self.features_list:
+            patches += feat.getpatches(self.symbol_dict,self.odbconf,pos_offset=pos_offset,**patchkwargs)
+        return patches
 
     def draw(self,ax,linecolor='k',linestyle='--',**patchkwargs):
-        # print(f'Attribute table:\n{self.attr_table}\n')
-        # print(f'Attribute text strings:\n{self.attr_texts}\n')
-        #  Test lines and arcs
-        
+        if not self.has_user_symbols:
+            print("Warning: No user symbols loaded into feature file. Use add_user_symbols().")        
         ax.set_aspect('equal')
         ax.set_box_aspect(1)
         for feat in self.features_list:
@@ -1819,14 +1914,39 @@ class ODBFeatureFile:
                 feat.draw(ax,self.symbol_dict,self.odbconf,ec=linecolor,**patchkwargs)
 
 class ODBUserSymbol(ODBSymbol):
-    def __init__(self,name: str,featpath: Path):
+    def __init__(self,name: str,featpath: Path, odbconf: ODBConfig):
         self.name = name
-        self.featpath = featpath 
-        self.featfile = ODBFeatureFile(featpath)
-    def getpatches(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> list[mpl.patches.Patch]:
+        self.featpath = featpath
+        self.odbconf = odbconf
+        self.featfile = ODBFeatureFile(featpath,self.odbconf)
+    def getpatches(self, pos: Coordinate2, **patchkwargs) -> list[mpl.patches.Patch]:
         """Convert features in featfile to patches for matplotlib"""
-        pass
+        if 'fc' in patchkwargs.keys():
+            patchkwargs['fc'] = 'g'
+        if 'pos_offset' in patchkwargs.keys():
+            patchkwargs['pos_offset'] = pos
+        # print(f"Getting patches for symbol {self.name} at {pos}")
+        self.patches = self.featfile.getpatches(pos_offset=pos,**patchkwargs)
+        
+        return self.patches
 
+def load_user_symbols(odbconf: ODBConfig):
+    print("Loading user symbols... ",end='')
+    user_sym_root = odbconf.root_path/'symbols'
+    all_sym_dirpaths = list(user_sym_root.glob('*'))
+    user_sym_paths = {}
+    for p in all_sym_dirpaths:
+        if p.is_dir():
+            user_sym_paths[p.name] = p
+    usersym_dict = {}
+    for name,sympath in user_sym_paths.items():
+        # Try reading a feature file
+        usersym_dict[name] = ODBUserSymbol(name,sympath/'features',odbconf)
+    print(f'Done. Found {len(usersym_dict)} symbols.')
+    return usersym_dict
+
+   
+    
 
 @dataclass 
 class ODBNetPoint:

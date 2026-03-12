@@ -21,6 +21,7 @@ import odbparse as odb
 root_name = 'examples/beagleboneblack'
 root_p = Path(root_name)
 odbconf = odb.load_ODB(root_p)
+user_sym_dict = odb.load_user_symbols(odbconf)  # Needs to be done manually
 
 # Parse relevant layers into `layer_features` list
 # NOTE - Some funny business here with the uppercase/lowercase. TODO
@@ -28,24 +29,27 @@ stepname = odbconf.matrix.matrix_steps[0].name.lower()
 layer_features = {}  # List of features files for different layers
 boardoutline_path = root_p/f'steps/{stepname}/profile'  # example 1
 boardoutline_feat = odb.ODBFeatureFile(boardoutline_path,odbconf)
+boardoutline_feat.add_user_symbols(user_sym_dict)
 for layer in odbconf.matrix.matrix_layers:
     if layer.layertype in odb.SIMULATION_LAYER_TYPES:
         featpath = root_p/f'steps/{stepname}/layers/{layer.name.lower()}/features'
         featfile = odb.ODBFeatureFile(featpath,odbconf)
+        featfile.add_user_symbols(user_sym_dict)
         layer_features[layer.name.lower()] = featfile
 
 fig,ax = plt.subplots(1,1,figsize=(7,7))
 ax.set_aspect('equal')
 ax.set_box_aspect(1)
-# boardoutline_feat.draw(ax)
-layer_features['top'].draw(ax,fc=(0.1,0.8,0.1,0.5))
+alpha = 0.3
+boardoutline_feat.draw(ax,fc=(0.8,0.1,0.1,alpha+0.2))
+layer_features['top'].draw(ax,fc=(0.1,0.8,0.1,alpha))
 ax.autoscale()
+fig.tight_layout()
+
+# %%
 # Parse netlist file
 fpath = odbconf.root_path/f'steps/{stepname}/netlists/cadnet/netlist'
 netlistfile = odb.ODBNetlistFile(fpath)
-
-# %%
-# ------------------------------------
 # Make graph of nets and break into subgraphs by name
 tgraph = nx.Graph()
 bgraph = nx.Graph()
@@ -98,7 +102,7 @@ for netp in netlistfile.net_points:
                 total_nodes = current_nodes.union(nx.node_connected_component(bgraph,pt))
                 net_graphs_bot[netname] = bgraph.subgraph(total_nodes)
 
-# %% Plot top layer lines and highlight a diff pair
+# Plot top layer lines and highlight a diff pair
 fig,ax = plt.subplots()
 ax.set_aspect('equal')
 ax.set_box_aspect(1)
@@ -125,7 +129,7 @@ for feat in blinefeats:
         # else:
             # feat.draw(ax,blay.symbol_dict,odbconf,'k:')
 
-# %% Trace out a diff pair
+# Trace out a diff pair
 # NOTE: For this demo, assume a trace is continuous, and take shortest path
 
 netname1 = 'HDMI_TXC+'
@@ -167,7 +171,7 @@ for n1,n2 in zip(path2,path2[1:]):
     ax.annotate("", xytext=(n1.x, n1.y), xy=(n2.x, n2.y),
             arrowprops=dict(arrowstyle="->"))
 
-# %% Make something for EMerge
+# Make something for EMerge
 
 # g1 is the networkx subgraph with only the nodes of interest, in some order
 # path1 is the path of coordinates using nodes from g1
