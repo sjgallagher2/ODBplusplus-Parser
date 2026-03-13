@@ -292,12 +292,12 @@ def read_structured_text(file: Path):
                 var = ODBVariable()
                 var.name = varline[0].strip()
                 val_s = varline[1].strip()
-                if val_s.isnumeric():
+                try:
                     var.value = float(val_s)
-                elif val_s == '':
-                    var.value = None
-                else:
+                except ValueError:
                     var.value = val_s
+                if val_s == '':
+                    var.value = None
                 used_var_idxs.append(vidx)
                 arr.variables.append(var)
         # update var_idxs
@@ -311,12 +311,12 @@ def read_structured_text(file: Path):
         var = ODBVariable()
         var.name = varline[0].strip()
         val_s = varline[1].strip()
-        if val_s.isnumeric():
+        try:
             var.value = float(val_s)
-        elif val_s == '':
-            var.value = None
-        else:
+        except ValueError:
             var.value = val_s
+        if val_s == '':
+            var.value = None
         variables.append(var)
     return (arrs,variables)
 
@@ -1181,35 +1181,35 @@ class ODBOvalThermalOpenCornersSymbol(ODBSymbol):
 # Parser / Factory
 # ----------------------------
 
-ODBSYMBOL_CLASSES = [
-    ODBRoundSymbol,
-    ODBSquareSymbol,
-    ODBRectangleSymbol,
-    ODBRoundedRectangleSymbol,
-    ODBChamferedRectangleSymbol,
-    ODBOvalSymbol,
-    ODBDiamondSymbol,
-    ODBOctagonSymbol,
-    ODBRoundDonutSymbol,
-    ODBSquareDonutSymbol,
-    ODBSquareRoundDonutSymbol,
-    ODBTriangleSymbol,
-    ODBEllipseSymbol,
-    ODBHoleSymbol,
-    ODBNullSymbol,
-    ODBRoundThermalRoundedSymbol,
-    ODBRoundThermalSquaredSymbol,
-    ODBSquareThermalSymbol,
-    ODBSquareThermalOpenCornersSymbol,
-    ODBSquareRoundThermalSymbol,
-    ODBRectangularThermalSymbol,
-    ODBRectangularThermalOpenCornersSymbol,
-    ODBRoundedSquareThermalSymbol,
-    ODBRoundedSquareThermalOpenCornersSymbol,
-    ODBRoundedRectangleThermalSymbol,
-    ODBRoundedRectangleThermalOpenCornersSymbol,
-    ODBOvalThermalSymbol,
-    ODBOvalThermalOpenCornersSymbol,
+ODBSYMBOL_CLASSES = [                               # IMPLEMENTED
+    ODBRoundSymbol,                                 # X
+    ODBSquareSymbol,                                # X
+    ODBRectangleSymbol,                             # X
+    ODBRoundedRectangleSymbol,                      # X
+    ODBChamferedRectangleSymbol,                    # -
+    ODBOvalSymbol,                                  # X
+    ODBDiamondSymbol,                               # -
+    ODBOctagonSymbol,                               # -
+    ODBRoundDonutSymbol,                            # -
+    ODBSquareDonutSymbol,                           # -
+    ODBSquareRoundDonutSymbol,                      # -
+    ODBTriangleSymbol,                              # -
+    ODBEllipseSymbol,                               # -
+    ODBHoleSymbol,                                  # -
+    ODBNullSymbol,                                  # X
+    ODBRoundThermalRoundedSymbol,                   # -
+    ODBRoundThermalSquaredSymbol,                   # -
+    ODBSquareThermalSymbol,                         # -
+    ODBSquareThermalOpenCornersSymbol,              # -
+    ODBSquareRoundThermalSymbol,                    # -
+    ODBRectangularThermalSymbol,                    # -
+    ODBRectangularThermalOpenCornersSymbol,         # -
+    ODBRoundedSquareThermalSymbol,                  # -
+    ODBRoundedSquareThermalOpenCornersSymbol,       # -
+    ODBRoundedRectangleThermalSymbol,               # -
+    ODBRoundedRectangleThermalOpenCornersSymbol,    # -
+    ODBOvalThermalSymbol,                           # -
+    ODBOvalThermalOpenCornersSymbol,                # -
 ]
 
 
@@ -1503,8 +1503,6 @@ class ODBFeatureSurface(ODBFeatureBase):
             for seg in self.segments:
                 if isinstance(seg,ODBFeatureSurface.ODBSurfacePolyCurve):
                     # vtxs are in translated coordinates, segment is in original coordinates
-                    if x0 != Coordinate2(0,0):
-                        print(f"Getting curvy polygon with nonzero position: {x0}")
                     p1 = Coordinate2(vtxs[-1][0],vtxs[-1][1])
                     p2 = seg.p2 + x0
                     segcenter = seg.center + x0
@@ -1945,7 +1943,69 @@ def load_user_symbols(odbconf: ODBConfig):
     print(f'Done. Found {len(usersym_dict)} symbols.')
     return usersym_dict
 
-   
+
+class ODBLayer:
+    """
+    Class representing a PCB layer with features from an ODB++ archive
+    """
+    def __init__(self,odbconf: ODBConfig, layername: str, is_toplevel=False, stepname = '', stepidx = 0):
+        """
+        Given ODB++ config and name or index of step to use (index is for `odbconf.matrix.matrix_steps`, 
+        use default if only one step is present, otherwise stepname is preferred), 
+        parse the layer geometry and properties using its `features` file and `attrlist`.
+        
+        NOTE: The matrix has (`odbconf.matrix`) has raw-parsed information on different layers.     
+        
+        To parse e.g. the `profile` file, set `is_toplevel=True`.  
+        """
+        self.odbconf = odbconf
+        self.name = layername
+        rp = odbconf.root_path
+        if stepname == '':
+            stepname = odbconf.matrix.matrix_steps[stepidx].name  # The rest is unnecessary technically but it gives nice feedback on error
+        # Find matching step path, case-insensitive
+        self.step_path = None
+        step_paths = list((rp/'steps').glob('*'))
+        step_path_names = [p.name for p in step_paths]
+        for i in range(len(step_path_names)):
+            if step_path_names[i].lower() == stepname.lower():
+                self.step_path = step_path_names[i]
+        if self.step_path is None:
+            raise ValueError(f"Could not find stepfile with name {stepname} out of options: {step_path_names}.")
+        
+        self.layer_root_path = rp/f'steps/{stepname}/layers/{layername}'
+        mat_layernames = [lay.name for lay in odbconf.matrix.matrix_layers]
+        layer_paths = list((rp/f'steps/{stepname}/layers').glob('*'))
+        layer_paths = [lp for lp in layer_paths if lp.is_dir()]
+        layer_path_names = [lp.name for lp in layer_paths]
+        if not self.layer_root_path.exists():
+            raise ValueError(f"Could not find layer with name {layername}. Known layers: {mat_layernames}; layer root paths: {layer_path_names}")
+        
+        self.featfile = ODBFeatureFile(self.layer_root_path/'features', self.odbconf)
+        self.attrlist_path = self.layer_root_path/'attrlist'
+        self.attrlist = []
+        self.attrdict = {}
+        if self.attrlist_path.exists():
+            attrlist_arrs,attrlist_vars = read_structured_text(self.attrlist_path)  # should only be vars
+            self.attrlist = attrlist_vars  # list of ODBVariable objects
+            for attr in self.attrlist:
+                self.attrdict[attr.name] = attr.value
+                    
+        # Look for various attributes
+        
+            
+        
+        
+        # boardoutline_path = odbconf.root_path/f'steps/{stepname}/profile'  # example 1
+        # boardoutline_featfile = odb.ODBFeatureFile(boardoutline_path,odbconf)
+        # boardoutline_featfile.add_user_symbols(user_sym_dict)
+        # for layer in odbconf.matrix.matrix_layers:
+        #     if layer.layertype in odb.SIMULATION_LAYER_TYPES:
+        #         featpath = root_p/f'steps/{stepname}/layers/{layer.name.lower()}/features'
+        #         featfile = odb.ODBFeatureFile(featpath,odbconf)
+        #         featfile.add_user_symbols(user_sym_dict)
+        #         layer_featfiles[layer.name.lower()] = featfile
+
     
 
 @dataclass 
