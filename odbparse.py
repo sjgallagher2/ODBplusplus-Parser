@@ -437,6 +437,18 @@ class ODBMatrix:
             layer = ODBMatrix.ODBLayerInfo()
             layer.load(larr)
             self.matrix_layers.append(layer)
+    def get_layer_by_name(self,name:str):
+        # Clunky lookup
+        for lay in self.matrix_layers:
+            if lay.name == name:
+                return lay
+        return None
+    def get_layer_by_row(self,row:int):
+        # Clunky lookup
+        for lay in self.matrix_layers:
+            if lay.row == row:
+                return lay
+        return None
 
 """ FEATURES
 All arguments are integers or floats
@@ -712,17 +724,21 @@ class ODBSymbol:
 
 
 # GLOBAL CONFIG
-@dataclass
-class ODBConfig:
-    root_path: Path
-    default_unit: ODBUnit
-    version: float
-    matrix: ODBMatrix
-    nsteps: int
-    nlayers: int
-    board_thickness: float = 0.0
-    user_symbols: dict[str,ODBSymbol]|None = None  # Name to symbol object
 
+class ODBConfig:
+    # Not dataclass in case we want to do anything different in __init__()
+    def __init__(self,root_path: Path,default_unit: ODBUnit,version:float,matrix:ODBMatrix,nsteps:int,nlayers:int,board_thickness:float=0.0,user_symbols:dict[str,ODBSymbol]|None = None):
+        self.root_path = root_path
+        self.default_unit = default_unit
+        self.version = version
+        self.matrix = matrix
+        self.nsteps = nsteps
+        self.nlayers = nlayers
+        self.board_thickness = board_thickness 
+        self.user_symbols = user_symbols
+        
+    def __repr__(self):
+        return f"ODBConfig(root_path={self.root_path},default_unit={self.default_unit},version={self.version},matrix={self.matrix},nsteps={self.nsteps},nlayers={self.nlayers},board_thickness={self.board_thickness},user_symbols={self.user_symbols})"
 
 # ----------------------------
 # Basic Shapes
@@ -1694,7 +1710,7 @@ class ODBFeaturePad(ODBFeatureBase):
     def __repr__(self):
         return f'ODBFeaturePad(p1={self.p1},sym_num={self.sym_num},resize_factor={self.resize_factor},dcode={self.dcode},orient_def={self.orient_def},attrtxt={self.attrtxt})'
 
-    
+
 
 class ODBFeatureText(ODBFeatureBase):
     """
@@ -1788,8 +1804,9 @@ class ODBFeatureFile:
         if lines[0][0] == ['U']:
             features_unit = ODBUnit[lines[0][1]]
         
-        surf_beg_idxs = []
-        surf_end_idxs = []
+        # surf_beg_idxs = []
+        # surf_end_idxs = []
+        surf_beg_idx = -1
         
         for i,line in enumerate(lines):
             # 1. Read features - Symbols Table
@@ -1851,16 +1868,13 @@ class ODBFeatureFile:
                     feat = ODBFeaturePad(line,features_unit)
                     self.features_list.append(feat)
                 elif line[0] == 'S':
-                    surf_beg_idxs.append(i)
-                    pass
+                    # surf_beg_idxs.append(i)
+                    surf_beg_idx = i
                 elif line[0] == 'SE':
-                    surf_end_idxs.append(i)
-        
-        # Go through surfaces
-        surf_idxs = list(zip(surf_beg_idxs,surf_end_idxs))
-        for sidxs in surf_idxs:
-            self.features_list.append(ODBFeatureSurface(lines[sidxs[0]:sidxs[1]+1],features_unit))
-        
+                    if surf_beg_idx == -1:
+                        raise ValueError("Parsing failed, Surface End record but no beginning found.")
+                    # surf_end_idxs.append(i)
+                    self.features_list.append(ODBFeatureSurface(lines[surf_beg_idx:i+1],features_unit))
         
         # Parse symbols
         # print(f'Symbol table:\n{self.symbol_table}\n')
@@ -1902,8 +1916,6 @@ class ODBFeatureFile:
     def draw(self,ax,linecolor='k',linestyle='--',**patchkwargs):
         if not self.has_user_symbols:
             print("Warning: No user symbols loaded into feature file. Use add_user_symbols().")        
-        ax.set_aspect('equal')
-        ax.set_box_aspect(1)
         for feat in self.features_list:
             if isinstance(feat,ODBFeatureLine):
                 feat.draw(ax,self.symbol_dict,self.odbconf,color=linecolor)
@@ -2061,7 +2073,7 @@ class ODB_EDA_LayersRecord(ODB_EDA_Record):
     def __init__(self,line: list[str]):
         if line[0] != 'LYR':
             raise ValueError(f"Got unexpected string {line}")
-        self.eda_layer_names = line[1:]
+        self.eda_layer_names = line[1:]  # to look up, simply index this list
 
 class ODB_EDA_NetRecord(ODB_EDA_Record):
     def __init__(self,line: list[str]):
@@ -2113,9 +2125,26 @@ class ODB_EDA_PlaneCutoutType(Enum):
             }
         return edict[char]
 
+
+class ODB_EDA_SubnetType(Enum):
+    TOEPRINT=auto()
+    PLANE=auto()
+    VIA=auto()
+    TRACE=auto
+    @classmethod 
+    def parse(cls,text):
+        edict = {
+            'SNT TOP':cls.TOEPRINT,
+            'SNT VIA':cls.VIA,
+            'SNT TRC':cls.TRACE,
+            'SNT PLN':cls.PLANE
+                 }
+        return edict[text]
+
+
 class ODB_EDA_SubnetRecord(ODB_EDA_Record):
     def __init__(self,line: list[str]):
-        self.rec_type = ' '.join(line[0:2])
+        self.rec_type = ODB_EDA_SubnetType.parse(' '.join(line[0:2]))
         line = ' '.join(line)
         self.toeprint_side = None
         self.toeprint_component_number = None
@@ -2123,7 +2152,7 @@ class ODB_EDA_SubnetRecord(ODB_EDA_Record):
         self.plane_fill_type = None
         self.plane_cutout = None
         self.plane_fill_size = None 
-        if self.rec_type == 'SNT TOP':
+        if self.rec_type == ODB_EDA_SubnetType.TOEPRINT:
             pattern = re.compile(r"^SNT\s+TOP\s+(?P<side>[TB])\s+(?P<comp_num>\d+)\s+(?P<pin_num>\d+)$")
             m = pattern.match(line)
             if m:
@@ -2132,7 +2161,7 @@ class ODB_EDA_SubnetRecord(ODB_EDA_Record):
                 self.toeprint_pin_number = m.group("pin_num")
             else:
                 raise ValueError(f"Could not match line of record type SNT TOP with text {line}")
-        elif self.rec_type == 'SNT PLN':
+        elif self.rec_type == ODB_EDA_SubnetType.PLANE:
             pattern = re.compile(r"^SNT\s+PLN\s+(?P<fill_type>[SHO])\s+(?P<cutout>[CROE])\s+(?P<fill_size>\d+(?:\.\d+)?)$")
             m = pattern.match(line)
             if m:
@@ -2154,6 +2183,7 @@ class ODB_EDA_PackageRecord(ODB_EDA_Record):
         self.ymin = float(line[4])
         self.xmax = float(line[5])
         self.ymax = float(line[6])
+        self.bounding_box = (self.xmin,self.ymin,self.xmax,self.ymax)
     def __repr__(self):
         return f'ODB_EDA_PackageRecord(name={self.name},pitch={self.pitch},xmin={self.xmin},ymin={self.ymin},xmax={self.xmax},ymax={self.ymax})'
     
@@ -2218,10 +2248,10 @@ class ODB_EDA_CircleRecord(ODB_EDA_Record):
         yc = float(line[2])
         self.c = Coordinate2(xc,yc)
         self.radius = float(line[3])
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.CirclePolygon:
-        patch = mpl.patches.CirclePolygon((self.c.x + pos.x,self.c.y + pos.y),radius=self.radius,resolution=10,fill=True,fc=color)
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, **patchkwargs) -> mpl.patches.CirclePolygon:
+        patch = mpl.patches.CirclePolygon((self.c.x + pos.x,self.c.y + pos.y),radius=self.radius,resolution=10,**patchkwargs)
         return patch
-        
+
 class ODB_EDA_SquareRecord(ODB_EDA_Record):
     def __init__(self,line: list[str]):
         """SQ <xc> <yc> <half side>"""
@@ -2231,10 +2261,10 @@ class ODB_EDA_SquareRecord(ODB_EDA_Record):
         yc = float(line[2])
         self.c = Coordinate2(xc,yc)
         self.halfside = float(line[3])
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.Rectangle:
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, **patchkwargs) -> mpl.patches.Rectangle:
         # pos is package position?
         xy = (self.c.x + pos.x - self.halfside, self.x.y+pos.y - self.halfside)
-        patch = mpl.patches.Rectangle(xy,width=2*self.halfside,height=2*self.side,fill=True,fc=color)
+        patch = mpl.patches.Rectangle(xy,width=2*self.halfside,height=2*self.side,**patchkwargs)
         return patch
     
 class ODB_EDA_RectangleRecord(ODB_EDA_Record):
@@ -2242,16 +2272,16 @@ class ODB_EDA_RectangleRecord(ODB_EDA_Record):
         """RC <lower_left_x> <lower_left_y> <width> <height>"""
         if line[0] != 'RC':
             raise ValueError(f"Got unexpected string {line}")
-        x1 = float(line[1])
+        x1 = float(line[1]) 
         y1 = float(line[2])
         x2 = float(line[3])
         y2 = float(line[4])
-        self.p0 = Coordinate2(x1,y1)
+        self.p0 = Coordinate2(x1,y1)  # NOTE: Unlike Square and Circle outlines, (x1,y1) is the bottom left corner, not the center
         self.width = x2
         self.height = y2
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.Rectangle:
-        xy = (self.p0.x + pos.x-self.width/2, self.p0.y + pos.y-self.height/2)
-        patch = mpl.patches.Rectangle(xy,width=self.width,height=self.height,fill=True,fc=color)
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, **patchkwargs) -> mpl.patches.Rectangle:
+        xy = (self.p0.x+pos.x, self.p0.y+pos.y)
+        patch = mpl.patches.Rectangle(xy,width=self.width,height=self.height,**patchkwargs)
         return patch
         
 class ODB_EDA_ContourRecord(ODB_EDA_Record):
@@ -2325,6 +2355,7 @@ class ODB_EDA_FeatureIDRecord(ODB_EDA_Record):
         self.feature_type = ODB_EDA_FeatureType.parse(line[1])
         self.layer_number = int(line[2])
         self.feature_number = int(line[3])
+        self.layer_name = ''  # to be updated later
     def __repr__(self):
         return f'ODB_EDA_FeatureIDRecord(feature_type={self.feature_type},layer_number={self.layer_number},feature_number={self.feature_number})'
         
@@ -2349,8 +2380,13 @@ class ODB_EDA_Pin:
         self.outline_record = outline_record
     
     def draw(self,ax, sym_dict, odbconf: ODBConfig):
-        patch = self.outline_record.getpatch(Coordinate2(0,0), odbconf)
-        ax.add_patch(patch)  # TODO implement remainder of drawing utils
+        if isinstance(self.outline_record,ODB_EDA_ContourRecord):
+            patches = self.outline_record.getpatches(None,odbconf,fc=(1.,0.84,0.29),ec='none')#sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs
+            for patch in patches:
+                ax.add_patch(patch)
+        else:
+            patch = self.outline_record.getpatch(Coordinate2(0,0),odbconf,fc=(1.,0.84,0.29),ec='none')
+            ax.add_patch(patch)
     
     def __repr__(self):
         return f'ODB_EDA_Pin(record={self.record},outline_record={self.outline_record})'
@@ -2361,9 +2397,23 @@ class ODB_EDA_Package:
                  property_recs: ODB_EDA_PropertyRecord=None,
                  pins: list[ODB_EDA_Pin]=None):
         self.record = pkg_record 
+        self.name = self.record.name  # steal attributes for convenience
+        self.pitch = self.record.pitch 
+        self.bounding_box = self.record.bounding_box
         self.outline_record = outline_record
         self.property_recs = property_recs or []
         self.pins = pins or []
+    
+    def draw(self,ax, sym_dict, odbconf: ODBConfig):
+        if isinstance(self.outline_record,ODB_EDA_ContourRecord):
+            patches = self.outline_record.getpatches(None,odbconf,fc='none',ec='k',lw=2)#sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs
+            for patch in patches:
+                ax.add_patch(patch)
+        else:
+            patch = self.outline_record.getpatch(Coordinate2(0,0),odbconf,fc='none',ec='k',lw=2)
+            ax.add_patch(patch)
+        for pin in self.pins:
+            pin.draw(ax,None,odbconf)
     
     def __repr__(self):
         return f'ODB_EDA_Package(record={self.record},outline_record={self.outline_record},property_recs={self.property_recs},pins={self.pins})'
@@ -2434,6 +2484,7 @@ class ODB_EDA_Data:
         # Record types
         print("Getting records...")
         self.recs = []
+        self.layers_record = None
         cont_beg_idx = -1
         for i,line in enumerate(lines):
             if line[0] == 'CT':
@@ -2446,6 +2497,10 @@ class ODB_EDA_Data:
                     raise ValueError("Parse failed, unmatched contour begin/end.")
             elif line[0] in ['OB','OS','OC','OE']:
                 pass  # polygons, handled in the ContourRecord
+            elif line[0] == 'LYR':
+                reccls = ODB_EDA_RecordClass.get(line[0])
+                if reccls is not None:
+                    self.layers_record = reccls(line)
             else:
                 reccls = ODB_EDA_RecordClass.get(line[0])
                 if reccls is not None:
@@ -2459,13 +2514,13 @@ class ODB_EDA_Data:
         #  an outline record but not immediately after."
         
         # Parsing nets
-        self.nets = []
+        self.nets = {}
         active_net = -1
         net_subnets = []
         active_subnet = -1
         subnet_fids = []
         # Parsing packages
-        self.packages = []
+        self.packages = {}
         active_pkg = -1
         pkg_outline_rec = None
         pkg_props = []
@@ -2482,9 +2537,13 @@ class ODB_EDA_Data:
         
         for i,rec in enumerate(self.recs):
             if isinstance(rec,ODB_EDA_NetRecord):
+                if active_subnet != -1:
+                    # finish previous subnet
+                    net_subnets.append(ODB_EDA_Subnet(self.recs[active_subnet],subnet_fids))
+                    subnet_fids = []
                 if active_net != -1:
                     # finish up and reset
-                    self.nets.append(ODB_EDA_Net(self.recs[active_net],net_subnets))
+                    self.nets[self.recs[active_net].name] = ODB_EDA_Net(self.recs[active_net],net_subnets)
                     active_net = -1
                     active_subnet = -1
                     net_subnets = []
@@ -2493,6 +2552,11 @@ class ODB_EDA_Data:
             elif isinstance(rec,ODB_EDA_FeatureIDRecord):
                 if active_subnet == -1:
                     raise ValueError(f"Parse failed, feature id record (FID) without active subnet. Record #{i}.")
+                    
+                # Before appending, update layer name
+                if self.layers_record is not None:
+                    rec.layer_name = self.layers_record.eda_layer_names[rec.layer_number]
+                
                 subnet_fids.append(rec)
             elif isinstance(rec,ODB_EDA_SubnetRecord):
                 if active_net == -1:
@@ -2506,7 +2570,7 @@ class ODB_EDA_Data:
             if isinstance(rec,ODB_EDA_PackageRecord):
                 if active_pkg != -1:
                     # finish up, reset
-                    self.packages.append(ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins))
+                    self.packages[self.recs[active_pkg].name] = ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins)
                     pkg_props = []
                     pkg_pins = []
                     active_pin = -1
@@ -2516,7 +2580,7 @@ class ODB_EDA_Data:
                 if active_pkg != -1:
                     # finish up, reset
                     # this probably won't ever occur
-                    self.packages.append(ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins))
+                    self.packages[self.recs[active_pkg].name] = ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins)
                     pkg_props = []
                     pkg_pins = []
                     active_pin = -1
@@ -2543,6 +2607,18 @@ class ODB_EDA_Data:
                 active_pin = i 
         
         print("Done.")
+    def draw_net(self,ax,netname,layers: list[ODBLayer],linecolor='k',**patchkwargs):
+        edanet = self.nets[netname]
+        for i,edasub in enumerate(edanet.subnets):
+            for j,fid in enumerate(edasub.feature_ids):
+                for layer in layers:
+                    if fid.layer_name.lower() == layer.name:
+                        feat = layer.featfile.features_list[fid.feature_number]
+                        if isinstance(feat,ODBFeatureLine):
+                            feat.draw(ax,layer.featfile.symbol_dict,self.odbconf,color=linecolor)
+                        else:
+                            feat.draw(ax,layer.featfile.symbol_dict,self.odbconf,ec=linecolor,**patchkwargs)
+        ax.autoscale()
 
 @dataclass 
 class ODBNetPoint:

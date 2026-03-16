@@ -5,8 +5,6 @@ Created on Wed Mar  4 16:02:08 2026
 @author: SG1295
 """
 from pathlib import Path
-from enum import Enum,auto
-from dataclasses import dataclass,field
 import numpy as np
 import networkx as nx  # graph library for mapping nets to lines
 
@@ -22,16 +20,18 @@ import odbparse as odb
 root_name = 'examples/beagleboneblack'
 root_p = Path(root_name)
 odbconf = odb.load_ODB(root_p)
-user_sym_dict = odb.load_user_symbols(odbconf)  # Needs to be done manually
+odb.load_user_symbols(odbconf)  # Needs to be done manually
 # %%
-# # Get simulatable layer types
-# layernames = []
-# for layer in odbconf.matrix.matrix_layers:
-#     if layer.layertype in odb.SIMULATION_LAYER_TYPES:
-#         layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
+# Get simulatable layer types
+layernames = []
+for layer in odbconf.matrix.matrix_layers:
+    if layer.layertype in odb.SIMULATION_LAYER_TYPES:
+        layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
 
 # Try constructing a new layer
 toplayer = odb.ODBLayer(odbconf,'top')
+bottomlayer = odb.ODBLayer(odbconf,'bottom')
+lyr4layer = odb.ODBLayer(odbconf,'lyr4')
 profile = odb.ODBLayer(odbconf,'profile',is_toplevel=True)
 
 # %% Plot layers
@@ -47,14 +47,53 @@ fig.tight_layout()
 # %% Parse eda/data file
 edadata = odb.ODB_EDA_Data(odbconf)
 
-pkg1 = edadata.packages[0]
+# %% Plot packages
+fig,axs = plt.subplots(8,5,figsize=(12.75,7))
+for i,(k,v) in enumerate(edadata.packages.items()):
+    if i>40:
+        break
+    row = i%8
+    col = i//8
+    
+    axs[row,col].set_aspect('equal')
+    axs[row,col].set_box_aspect(1)
+    v.draw(axs[row,col],None,odbconf)
+    axs[row,col].autoscale()
+    axs[row,col].set_title(k)
+    axs[row,col].set_frame_on(False)
+    axs[row,col].set_axis_off()
+
+# %% Interpret a net
+netname = 'MMC1_CLK'  # random net
+edanet: odb.ODB_EDA_Net = edadata.nets[netname]
+print(f"Net name: {netname}")
+print(f"Number of subnets: {len(edanet.subnets)}")
+for i,edasub in enumerate(edanet.subnets):
+    print(f"\tSubnet {i} has type {edasub.record.rec_type.name}, with {len(edasub.feature_ids)} features",end='')
+    if edasub.record.rec_type == odb.ODB_EDA_SubnetType.TOEPRINT:
+        print(f", side {edasub.record.toeprint_side.name}, component {edasub.record.toeprint_component_number}, pin {edasub.record.toeprint_pin_number}")
+    elif edasub.record.rec_type == odb.ODB_EDA_SubnetType.PLANE:
+        print(f", plane fill type {edasub.record.plane_fill_type.name}, plane cutout {edasub.record.plane_cutout.name}, plane fill size {edasub.record.plane_fill_size}")
+    else:
+        print()
+    for j,fid in enumerate(edasub.feature_ids):
+        print(f"\t\tFeature {j} has type {fid.feature_type.name}, feature number {fid.feature_number} on layer {fid.layer_name}")
+
+# Draw its features
 fig,ax = plt.subplots(1,1,figsize=(7,7))
 ax.set_aspect('equal')
 ax.set_box_aspect(1)
-# draw package TODO
+alpha = 0.3
+profile.featfile.draw(ax,fc='none')#(0.8,0.1,0.1,alpha+0.2))
+toplayer.featfile.draw(ax,fc=(0.1,0.8,0.1,alpha))
+edadata.draw_net(ax, netname, [lyr4layer,toplayer,bottomlayer],linecolor='r', fc='none')
+ax.autoscale()
+fig.tight_layout()
 
 # %%
-# Parse netlist file
+# Parse CADNet netlist file
+stepname = 'stp'
+
 fpath = odbconf.root_path/f'steps/{stepname}/netlists/cadnet/netlist'
 netlistfile = odb.ODBNetlistFile(fpath)
 # Make graph of nets and break into subgraphs by name
@@ -62,8 +101,10 @@ tgraph = nx.Graph()
 bgraph = nx.Graph()
 # Nodes are Coordinate2 objects, nets are edges
 
-tlay = layer_features['top']  # 'top'
-blay = layer_features['bottom']  # 'bottom'
+# TODO this all needs to be updated to use Layer objects
+tlay = toplayer.featfile  # 'top'
+blay = bottomlayer.featfile
+
 tlinefeats = [feat for feat in tlay.features_list if isinstance(feat,odb.ODBFeatureLine)]
 blinefeats = [feat for feat in blay.features_list if isinstance(feat,odb.ODBFeatureLine)]
 
@@ -157,7 +198,7 @@ for node in path1:
 print(f'{netname2}:')
 for node in path2:
     print(f'\t({node.x},{node.y})')
-        
+
 # Plot, with arrows showing order of nodes
 fig,ax = plt.subplots()
 ax.set_aspect('equal')
