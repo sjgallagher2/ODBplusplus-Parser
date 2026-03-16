@@ -11,6 +11,7 @@ import numpy as np
 import networkx as nx  # graph library for mapping nets to lines
 
 # For testing only
+import re
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from coordinate2 import Coordinate2
@@ -22,29 +23,35 @@ root_name = 'examples/beagleboneblack'
 root_p = Path(root_name)
 odbconf = odb.load_ODB(root_p)
 user_sym_dict = odb.load_user_symbols(odbconf)  # Needs to be done manually
+# %%
+# # Get simulatable layer types
+# layernames = []
+# for layer in odbconf.matrix.matrix_layers:
+#     if layer.layertype in odb.SIMULATION_LAYER_TYPES:
+#         layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
 
-# Parse relevant layers into `layer_features` list
-# NOTE - Some funny business here with the uppercase/lowercase. TODO
-stepname = odbconf.matrix.matrix_steps[0].name.lower()
-layer_features = {}  # List of features files for different layers
-boardoutline_path = root_p/f'steps/{stepname}/profile'  # example 1
-boardoutline_feat = odb.ODBFeatureFile(boardoutline_path,odbconf)
-boardoutline_feat.add_user_symbols(user_sym_dict)
-for layer in odbconf.matrix.matrix_layers:
-    if layer.layertype in odb.SIMULATION_LAYER_TYPES:
-        featpath = root_p/f'steps/{stepname}/layers/{layer.name.lower()}/features'
-        featfile = odb.ODBFeatureFile(featpath,odbconf)
-        featfile.add_user_symbols(user_sym_dict)
-        layer_features[layer.name.lower()] = featfile
+# Try constructing a new layer
+toplayer = odb.ODBLayer(odbconf,'top')
+profile = odb.ODBLayer(odbconf,'profile',is_toplevel=True)
 
+# %% Plot layers
 fig,ax = plt.subplots(1,1,figsize=(7,7))
 ax.set_aspect('equal')
 ax.set_box_aspect(1)
 alpha = 0.3
-boardoutline_feat.draw(ax,fc=(0.8,0.1,0.1,alpha+0.2))
-layer_features['top'].draw(ax,fc=(0.1,0.8,0.1,alpha))
+profile.featfile.draw(ax,fc=(0.8,0.1,0.1,alpha+0.2))
+toplayer.featfile.draw(ax,fc=(0.1,0.8,0.1,alpha))
 ax.autoscale()
 fig.tight_layout()
+
+# %% Parse eda/data file
+edadata = odb.ODB_EDA_Data(odbconf)
+
+pkg1 = edadata.packages[0]
+fig,ax = plt.subplots(1,1,figsize=(7,7))
+ax.set_aspect('equal')
+ax.set_box_aspect(1)
+# draw package TODO
 
 # %%
 # Parse netlist file

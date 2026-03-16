@@ -1378,6 +1378,163 @@ class ODBFeatureArc(ODBFeatureBase):
         return f'ODBFeatureArc(pt_s={self.pt_s},pt_e={self.pt_e},pt_c={self.pt_c},sym_num={self.sym_num},pol={self.pol},dcode={self.dcode},cw={self.cw},attrtxt={self.attrtxt})'
 
 
+@dataclass
+class ODBPolyCurve:
+    #p1 : Coordinate2   is actually the previous point
+    p2: Coordinate2
+    center: Coordinate2
+    cw: bool
+    def getpatch(self,prev_pt:Coordinate2):
+        p1 = prev_pt
+        rad = (p1-self.center).magnitude()
+        angle_start_deg = (p1-self.center).angle(True)%360
+        angle_end_deg = (self.p2-self.center).angle(True)%360
+
+        if self.cw:
+            arc = mpl.patches.Arc((self.center.x,self.center.y), width=2*rad, height=2*rad, 
+                                  angle=0, theta1=angle_end_deg, theta2=angle_start_deg,color='k',lw=1.5)
+        else:
+            arc = mpl.patches.Arc((self.center.x,self.center.y), width=2*rad, height=2*rad, 
+                                  angle=0, theta1=angle_start_deg, theta2=angle_end_deg,color='k',lw=1.5)
+        return arc 
+    
+class ODBPolygonType(Enum):
+    ISLAND=auto()
+    HOLE=auto()
+class ODBPolygon:
+    def __init__(self,txt_lines,unit: ODBUnit):
+        """
+        NOTE: txt_lines MUST contain ALL lines for the surface (from OB to OE)
+        All lines should be split by spaces ' '
+        
+        Points are stored as complex numbers
+        """
+        self.unit = unit
+        if txt_lines[0][0] != 'OB' or txt_lines[-1][0] != 'OE':
+            raise ValueError(f"Could not find start and end of polygon: {txt_lines}")
+        xbs = float(txt_lines[0][1])
+        ybs = float(txt_lines[0][2])
+        self.bs = Coordinate2(xbs,ybs)
+        ptype = txt_lines[0][3]
+        if ptype == 'I':    
+            self.poly_type = ODBPolygonType.ISLAND
+        elif ptype == 'H':    
+            self.poly_type = ODBPolygonType.HOLE
+        else:
+            raise ValueError(f"Unknown polygon type {ptype}")
+        
+        self.segments = []  # segments and curves
+        
+        for line in txt_lines[1:]:
+            if line[0] == 'OE':
+                """
+                Polygon begin
+                OB <xbs> <ybs> <poly_type>
+                xbs,ybs         polygon start point
+                poly_type       I for island, H for hole
+                """
+                break
+            elif line[0] == 'OS':
+                """
+                Polygon segment
+                OS <x> <y>
+                x, y            segment end point
+                (previous polygon point is the start point)
+                """
+                self.segments.append(Coordinate2(float(line[1]),float(line[2])))
+            elif line[0] == 'OC':
+                """
+                Polygon curve
+                OC <xe> <ye> <xc> <yc> <cw>
+                xe, ye          curve end point (previous polygon point is the start point)
+                xc, yc          curve center point
+                cw              Y for clockwise, N for counter clockwise
+                """
+                p1 = Coordinate2(float(line[1]),float(line[2]))
+                p2 = Coordinate2(float(line[3]),float(line[4]))
+                cw = False
+                if line[5] == 'Y':
+                    cw = True
+                
+                self.segments.append(ODBPolyCurve(
+                    p1,p2,cw
+                    ))
+    def getpatch(self, odbconf: ODBConfig, pos_offset: Coordinate2 = Coordinate2(0,0), **patchkwargs) -> mpl.patches.PathPatch:
+        # Need to construct an mpl.path.Path()
+        # This requires converting curves to quadratic or cubic Bezier curves
+        # Curves are given by center, start, and end. 
+        MOVETO = mpl.path.Path.MOVETO
+        LINETO = mpl.path.Path.LINETO
+        CURVE4 = mpl.path.Path.CURVE4
+        
+        x0 = pos_offset
+        
+        # Initialize at start
+        vtxs = [(self.bs.x+x0.x,self.bs.y+x0.y)]
+        codes = [MOVETO]
+        
+        for seg in self.segments:
+            if isinstance(seg,ODBPolyCurve):
+                # vtxs are in translated coordinates, segment is in original coordinates
+                p1 = Coordinate2(vtxs[-1][0],vtxs[-1][1])
+                p2 = seg.p2 + x0
+                segcenter = seg.center + x0
+                rad = (p1-segcenter).magnitude()
+                angle_start_deg = (p1-segcenter).angle(True)%360
+                angle_end_deg = (p2-segcenter).angle(True)%360
+                
+                # Check if we need to break the arc up into smaller (<= 90 degrees) segments
+                if seg.cw:
+                    angle_span = (angle_start_deg - angle_end_deg)
+                else:
+                    angle_span = (angle_end_deg - angle_start_deg)
+
+                if angle_span < 0:
+                    angle_span += 360  # Positive only
+
+                if angle_span > 180:
+                    # Break up into segments <= 90 degrees
+                    start_angles = []
+                    end_angles = []
+                    next_angle = angle_start_deg
+                    timeout = 10
+                    if seg.cw:
+                        # Angles decrease to angle_start_deg-angle_span
+                        while next_angle > (angle_start_deg - angle_span) and timeout > 0:
+                            start_angles.append(next_angle)
+                            next_angle = start_angles[-1] - 90
+                            end_angles.append(next_angle)
+                            timeout -= 1
+                        end_angles[-1] = angle_start_deg - angle_span
+                    else:
+                        # Angles increase to angle_start_deg+angle_span
+                        while next_angle < (angle_start_deg + angle_span) and timeout > 0:
+                            start_angles.append(next_angle)
+                            next_angle = start_angles[-1] + 90
+                            end_angles.append(next_angle)
+                            timeout -= 1
+                        end_angles[-1] = angle_start_deg + angle_span
+                    
+                    # Now generate arcs from start_angle to end_angle for each
+                    for i in range(len(start_angles)):
+                        arc_vtxs,arc_codes = circular_arc_to_path(segcenter, rad, start_angles[i], end_angles[i],seg.cw)
+                        vtxs += arc_vtxs
+                        codes += arc_codes
+                        
+                    
+                else:                    
+                    arc_vtxs,arc_codes = circular_arc_to_path(segcenter, rad, angle_start_deg, angle_end_deg,seg.cw)
+                    vtxs += arc_vtxs
+                    codes += arc_codes
+            else:  # line
+                vtxs.append((seg.x + x0.x,seg.y + x0.y))
+                codes.append(LINETO)
+        mplpath = mpl.path.Path(vtxs,codes)
+        patch = mpl.patches.PathPatch(mplpath,**patchkwargs)
+        return patch
+    
+    def __repr__(self):
+        return f'ODBPolygon(bs={self.bs},segments={self.segments})'
 
 
 class ODBFeatureSurface(ODBFeatureBase):
@@ -1404,164 +1561,6 @@ class ODBFeatureSurface(ODBFeatureBase):
     If any of the above mentioned violations occurs, the system will not be able to read
     the file, and will return an error.
     """
-    
-    @dataclass
-    class ODBSurfacePolyCurve:
-        #p1 : Coordinate2   is actually the previous point
-        p2: Coordinate2
-        center: Coordinate2
-        cw: bool
-        def getpatch(self,prev_pt:Coordinate2):
-            p1 = prev_pt
-            rad = (p1-self.center).magnitude()
-            angle_start_deg = (p1-self.center).angle(True)%360
-            angle_end_deg = (self.p2-self.center).angle(True)%360
-
-            if self.cw:
-                arc = mpl.patches.Arc((self.center.x,self.center.y), width=2*rad, height=2*rad, 
-                                      angle=0, theta1=angle_end_deg, theta2=angle_start_deg,color='k',lw=1.5)
-            else:
-                arc = mpl.patches.Arc((self.center.x,self.center.y), width=2*rad, height=2*rad, 
-                                      angle=0, theta1=angle_start_deg, theta2=angle_end_deg,color='k',lw=1.5)
-            return arc 
-        
-    class ODBPolygonType(Enum):
-        ISLAND=auto()
-        HOLE=auto()
-    class ODBSurfacePolygon:
-        def __init__(self,txt_lines,unit: ODBUnit):
-            """
-            NOTE: txt_lines MUST contain ALL lines for the surface (from OB to OE)
-            All lines should be split by spaces ' '
-            
-            Points are stored as complex numbers
-            """
-            self.unit = unit
-            if txt_lines[0][0] != 'OB' or txt_lines[-1][0] != 'OE':
-                raise ValueError(f"Could not find start and end of polygon: {txt_lines}")
-            xbs = float(txt_lines[0][1])
-            ybs = float(txt_lines[0][2])
-            self.bs = Coordinate2(xbs,ybs)
-            ptype = txt_lines[0][3]
-            if ptype == 'I':    
-                self.poly_type = ODBFeatureSurface.ODBPolygonType.ISLAND
-            elif ptype == 'H':    
-                self.poly_type = ODBFeatureSurface.ODBPolygonType.HOLE
-            else:
-                raise ValueError(f"Unknown polygon type {ptype}")
-            
-            self.segments = []  # segments and curves
-            
-            for line in txt_lines[1:]:
-                if line[0] == 'OE':
-                    """
-                    Polygon begin
-                    OB <xbs> <ybs> <poly_type>
-                    xbs,ybs         polygon start point
-                    poly_type       I for island, H for hole
-                    """
-                    break
-                elif line[0] == 'OS':
-                    """
-                    Polygon segment
-                    OS <x> <y>
-                    x, y            segment end point
-                    (previous polygon point is the start point)
-                    """
-                    self.segments.append(Coordinate2(float(line[1]),float(line[2])))
-                elif line[0] == 'OC':
-                    """
-                    Polygon curve
-                    OC <xe> <ye> <xc> <yc> <cw>
-                    xe, ye          curve end point (previous polygon point is the start point)
-                    xc, yc          curve center point
-                    cw              Y for clockwise, N for counter clockwise
-                    """
-                    p1 = Coordinate2(float(line[1]),float(line[2]))
-                    p2 = Coordinate2(float(line[3]),float(line[4]))
-                    cw = False
-                    if line[5] == 'Y':
-                        cw = True
-                    
-                    self.segments.append(ODBFeatureSurface.ODBSurfacePolyCurve(
-                        p1,p2,cw
-                        ))
-        def getpatch(self, odbconf: ODBConfig, pos_offset: Coordinate2 = Coordinate2(0,0), **patchkwargs) -> mpl.patches.PathPatch:
-            # Need to construct an mpl.path.Path()
-            # This requires converting curves to quadratic or cubic Bezier curves
-            # Curves are given by center, start, and end. 
-            MOVETO = mpl.path.Path.MOVETO
-            LINETO = mpl.path.Path.LINETO
-            CURVE4 = mpl.path.Path.CURVE4
-            
-            x0 = pos_offset
-            
-            # Initialize at start
-            vtxs = [(self.bs.x+x0.x,self.bs.y+x0.y)]
-            codes = [MOVETO]
-            
-            for seg in self.segments:
-                if isinstance(seg,ODBFeatureSurface.ODBSurfacePolyCurve):
-                    # vtxs are in translated coordinates, segment is in original coordinates
-                    p1 = Coordinate2(vtxs[-1][0],vtxs[-1][1])
-                    p2 = seg.p2 + x0
-                    segcenter = seg.center + x0
-                    rad = (p1-segcenter).magnitude()
-                    angle_start_deg = (p1-segcenter).angle(True)%360
-                    angle_end_deg = (p2-segcenter).angle(True)%360
-                    
-                    # Check if we need to break the arc up into smaller (<= 90 degrees) segments
-                    if seg.cw:
-                        angle_span = (angle_start_deg - angle_end_deg)
-                    else:
-                        angle_span = (angle_end_deg - angle_start_deg)
-
-                    if angle_span < 0:
-                        angle_span += 360  # Positive only
-
-                    if angle_span > 180:
-                        # Break up into segments <= 90 degrees
-                        start_angles = []
-                        end_angles = []
-                        next_angle = angle_start_deg
-                        timeout = 10
-                        if seg.cw:
-                            # Angles decrease to angle_start_deg-angle_span
-                            while next_angle > (angle_start_deg - angle_span) and timeout > 0:
-                                start_angles.append(next_angle)
-                                next_angle = start_angles[-1] - 90
-                                end_angles.append(next_angle)
-                                timeout -= 1
-                            end_angles[-1] = angle_start_deg - angle_span
-                        else:
-                            # Angles increase to angle_start_deg+angle_span
-                            while next_angle < (angle_start_deg + angle_span) and timeout > 0:
-                                start_angles.append(next_angle)
-                                next_angle = start_angles[-1] + 90
-                                end_angles.append(next_angle)
-                                timeout -= 1
-                            end_angles[-1] = angle_start_deg + angle_span
-                        
-                        # Now generate arcs from start_angle to end_angle for each
-                        for i in range(len(start_angles)):
-                            arc_vtxs,arc_codes = circular_arc_to_path(segcenter, rad, start_angles[i], end_angles[i],seg.cw)
-                            vtxs += arc_vtxs
-                            codes += arc_codes
-                            
-                        
-                    else:                    
-                        arc_vtxs,arc_codes = circular_arc_to_path(segcenter, rad, angle_start_deg, angle_end_deg,seg.cw)
-                        vtxs += arc_vtxs
-                        codes += arc_codes
-                else:  # line
-                    vtxs.append((seg.x + x0.x,seg.y + x0.y))
-                    codes.append(LINETO)
-            mplpath = mpl.path.Path(vtxs,codes)
-            patch = mpl.patches.PathPatch(mplpath,**patchkwargs)
-            return patch
-        
-        def __repr__(self):
-            return f'ODBSurfacePolygon(bs={self.bs},segments={self.segments})'
     
     def __init__(self,txt_lines,unit: ODBUnit):
         """
@@ -1592,7 +1591,7 @@ class ODBFeatureSurface(ODBFeatureBase):
                 poly_end_idxs.append(i+1)
         poly_idxs = list(zip(poly_beg_idxs,poly_end_idxs))
         for pidxs in poly_idxs:
-            self.polygons.append(ODBFeatureSurface.ODBSurfacePolygon(txt_lines[pidxs[0]:pidxs[1]+1],self.unit))
+            self.polygons.append(ODBPolygon(txt_lines[pidxs[0]:pidxs[1]+1],self.unit))
     def draw(self,ax,sym_dict,odbconf: ODBConfig, **patchkwargs):
         for poly in self.polygons:
             ax.add_patch(poly.getpatch(odbconf, **patchkwargs))  # NOTE: ignoring polarity for now, TODO
@@ -1962,51 +1961,588 @@ class ODBLayer:
         self.name = layername
         rp = odbconf.root_path
         if stepname == '':
-            stepname = odbconf.matrix.matrix_steps[stepidx].name  # The rest is unnecessary technically but it gives nice feedback on error
+            stepname = odbconf.matrix.matrix_steps[stepidx].name 
         # Find matching step path, case-insensitive
+        # Windows seems to not care, Linux does
         self.step_path = None
         step_paths = list((rp/'steps').glob('*'))
         step_path_names = [p.name for p in step_paths]
         for i in range(len(step_path_names)):
             if step_path_names[i].lower() == stepname.lower():
-                self.step_path = step_path_names[i]
-        if self.step_path is None:
+                self.step_path = step_paths[i]
+                # stepname = step_path_names[i]
+        if not self.step_path.exists():
             raise ValueError(f"Could not find stepfile with name {stepname} out of options: {step_path_names}.")
         
-        self.layer_root_path = rp/f'steps/{stepname}/layers/{layername}'
-        mat_layernames = [lay.name for lay in odbconf.matrix.matrix_layers]
-        layer_paths = list((rp/f'steps/{stepname}/layers').glob('*'))
-        layer_paths = [lp for lp in layer_paths if lp.is_dir()]
-        layer_path_names = [lp.name for lp in layer_paths]
+        if is_toplevel:
+            self.layer_root_path = self.step_path 
+            self.matrix_layer = None
+        else:
+            self.layer_root_path = self.step_path/f'layers/{layername}'
+            mat_layernames = [lay.name for lay in odbconf.matrix.matrix_layers]
+            self.matrix_layer = None
+            for ml in odbconf.matrix.matrix_layers:
+                if ml.name.lower() == layername.lower():
+                    self.matrix_layer = ml
+            layer_paths = list((self.step_path/f'layers').glob('*'))
+            layer_paths = [lp for lp in layer_paths if lp.is_dir()]
+            layer_path_names = [lp.name for lp in layer_paths]
         if not self.layer_root_path.exists():
             raise ValueError(f"Could not find layer with name {layername}. Known layers: {mat_layernames}; layer root paths: {layer_path_names}")
         
-        self.featfile = ODBFeatureFile(self.layer_root_path/'features', self.odbconf)
+        if is_toplevel:
+            self.featfile = ODBFeatureFile(self.layer_root_path/layername, self.odbconf)
+        else:
+            self.featfile = ODBFeatureFile(self.layer_root_path/'features', self.odbconf)
         self.attrlist_path = self.layer_root_path/'attrlist'
-        self.attrlist = []
         self.attrdict = {}
         if self.attrlist_path.exists():
             attrlist_arrs,attrlist_vars = read_structured_text(self.attrlist_path)  # should only be vars
-            self.attrlist = attrlist_vars  # list of ODBVariable objects
-            for attr in self.attrlist:
+            for attr in attrlist_vars:
                 self.attrdict[attr.name] = attr.value
                     
         # Look for various attributes
+        self.eda_layers = self.attrdict.get('.eda_layers')  # List of EDA layer names that compose a physical layer
+        # Copper attributes
+        self.copper_thickness = self.attrdict.get('.copper_thickness')
+        self.copper_weight = self.attrdict.get('.copper_weight')  # weight of copper according to its units of measurement (microns for metric, oz/sq.ft for imperial)
+        self.bulk_resistivity = self.attrdict.get('.bulk_resistivity')  # in nano-ohm.meter, 0-10000
+        # Dielectric attributes
+        self.dielectric_constant = self.attrdict.get('.dielectric_constant')
+        self.layer_dielectric = self.attrdict.get('.layer_dielectric')  # thickness of dielectric material
+        self.loss_tangent = self.attrdict.get('.loss_tangent')  # loss tangent, 0-100
+        # Other attributes
+        self.z0impedance = self.attrdict.get('.z0impedance')  # typical characteristic impedance required for a layer
+        # Try to calculate layer thickness
+        self.thickness = 0.0
+        if self.layer_dielectric is not None:
+            self.thickness = self.layer_dielectric
+        if self.copper_weight is not None:
+            pass  # convert oz cu to mils, or use microns
         
-            
-        
-        
-        # boardoutline_path = odbconf.root_path/f'steps/{stepname}/profile'  # example 1
-        # boardoutline_featfile = odb.ODBFeatureFile(boardoutline_path,odbconf)
-        # boardoutline_featfile.add_user_symbols(user_sym_dict)
-        # for layer in odbconf.matrix.matrix_layers:
-        #     if layer.layertype in odb.SIMULATION_LAYER_TYPES:
-        #         featpath = root_p/f'steps/{stepname}/layers/{layer.name.lower()}/features'
-        #         featfile = odb.ODBFeatureFile(featpath,odbconf)
-        #         featfile.add_user_symbols(user_sym_dict)
-        #         layer_featfiles[layer.name.lower()] = featfile
+        # Load useful attributes from matrix layer info
+        self.layertype: ODBLayerMatrixType|None = None
+        self.dielectric_name: str = ''
+        self.dielectric_type: ODBLayerMatrixDielectricType|None = None
+        self.cu_top: str = ''
+        self.cu_bottom: str = ''
+        self.matrixrow: int|None = None
+        self.layerid: int|None = None
+        self.polarity: ODBLayerMatrixPolarity|None = None
+        self.form: ODBLayerMatrixForm|None = None
+        self.add_type: ODBLayerMatrixLayerRoutSubtype|ODBLayerMatrixLayerDrillSubtype|ODBLayerMatrixLayerConductivePasteSubtype|ODBLayerMatrixLayerDocumentSubtype|ODBLayerMatrixLayerMaskSubtype|ODBLayerMatrixLayerMixedSubtype|ODBLayerMatrixLayerPowerGroundSubtype|ODBLayerMatrixLayerSignalSubtype|ODBLayerMatrixLayerSolderMaskSubtype|None = None
+        self.color: str = ''
+        if self.matrix_layer is not None:
+            self.layertype = self.matrix_layer.layertype
+            self.dielectric_name = self.matrix_layer.dielectric_name
+            self.dielectric_type = self.matrix_layer.dielectric_type
+            self.matrixrow = self.matrix_layer.row 
+            self.cu_top = self.matrix_layer.cu_top
+            self.cu_bottom = self.matrix_layer.cu_bottom
+            self.layerid = self.matrix_layer.layerid
+            self.polarity = self.matrix_layer.polarity
+            self.form = self.matrix_layer.form 
+            self.add_type = self.matrix_layer.add_type 
+            self.color = self.matrix_layer.color
 
+
+
+
+class ODB_EDA_Record:  # parent class for EDA data records
+    pass
+
+class ODB_EDA_HeaderRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        if line[0] != 'HDR':
+            raise ValueError(f"Got unexpected string {line}")
+        self.source = ' '.join(line[1:])
+
+class ODB_EDA_LayersRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        if line[0] != 'LYR':
+            raise ValueError(f"Got unexpected string {line}")
+        self.eda_layer_names = line[1:]
+
+class ODB_EDA_NetRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        pattern = re.compile(r"^NET\s(?P<name>[^;]*);?(?P<attrs>.*)?$")
+        m = pattern.match(' '.join(line))
+        if m:
+            self.name = m.group("name")
+            self.attrs = m.group("attrs").split(',')
+            if self.attrs == ['']:
+                self.attrs = []
+        else:
+            raise ValueError(f"Could not match line of record type NET with text {line}")
+        
+
+class ODB_EDA_SubnetSide(Enum):
+    TOP=auto()
+    BOTTOM=auto()
+    @classmethod
+    def parse(cls,char):
+        edict = {
+            'T':cls.TOP,
+            'B':cls.BOTTOM
+            }
+        return edict[char]
+class ODB_EDA_PlaneFillType(Enum):
+    SOLID=auto()
+    HATCHED=auto()
+    OUTLINE=auto()
+    @classmethod
+    def parse(cls,char):
+        edict = {
+            'S':cls.SOLID,
+            'H':cls.HATCHED,
+            'O':cls.OUTLINE
+            }
+        return edict[char]
+class ODB_EDA_PlaneCutoutType(Enum):
+    CIRCLE=auto()
+    RECT=auto()
+    OCTAGON=auto()
+    EXACT=auto()
+    @classmethod
+    def parse(cls,char):
+        edict = {
+            'C':cls.CIRCLE,
+            'R':cls.RECT,
+            'O':cls.OCTAGON,
+            'E':cls.EXACT
+            }
+        return edict[char]
+
+class ODB_EDA_SubnetRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        self.rec_type = ' '.join(line[0:2])
+        line = ' '.join(line)
+        self.toeprint_side = None
+        self.toeprint_component_number = None
+        self.toeprint_pin_number = None
+        self.plane_fill_type = None
+        self.plane_cutout = None
+        self.plane_fill_size = None 
+        if self.rec_type == 'SNT TOP':
+            pattern = re.compile(r"^SNT\s+TOP\s+(?P<side>[TB])\s+(?P<comp_num>\d+)\s+(?P<pin_num>\d+)$")
+            m = pattern.match(line)
+            if m:
+                self.toeprint_side = ODB_EDA_SubnetSide.parse(m.group("side"))
+                self.toeprint_component_number = m.group("comp_num")
+                self.toeprint_pin_number = m.group("pin_num")
+            else:
+                raise ValueError(f"Could not match line of record type SNT TOP with text {line}")
+        elif self.rec_type == 'SNT PLN':
+            pattern = re.compile(r"^SNT\s+PLN\s+(?P<fill_type>[SHO])\s+(?P<cutout>[CROE])\s+(?P<fill_size>\d+(?:\.\d+)?)$")
+            m = pattern.match(line)
+            if m:
+                self.plane_fill_type = ODB_EDA_PlaneFillType.parse(m.group("fill_type"))
+                self.plane_cutout = ODB_EDA_PlaneCutoutType.parse(m.group("cutout"))
+                self.plane_fill_size = m.group("fill_size")
+            else:
+                raise ValueError(f"Could not match line of record type SNT PLN with text {line}")
+        
+        
+class ODB_EDA_PackageRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        """PKG <name> <pitch> <xmin> <ymin> <xmax> <ymax>"""
+        if line[0] != 'PKG':
+            raise ValueError(f"Got unexpected string {line}")
+        self.name = line[1]
+        self.pitch = float(line[2])
+        self.xmin = float(line[3])
+        self.ymin = float(line[4])
+        self.xmax = float(line[5])
+        self.ymax = float(line[6])
+    def __repr__(self):
+        return f'ODB_EDA_PackageRecord(name={self.name},pitch={self.pitch},xmin={self.xmin},ymin={self.ymin},xmax={self.xmax},ymax={self.ymax})'
     
+class ODB_EDA_PinMountTypes(Enum):
+    SMT=auto()         # S - SMT
+    SMTPAD=auto()      # D - Recommended SMT pad (where the pin size is the recommended pad size and not the pin size).
+    THRUHOLE=auto()    # T - Thru-hole
+    THRUHOLESZ=auto()  # R - Thru-hole where the pin size is the recommended hole size and not the pin size.
+    PRESSFIT=auto()    # P - Pressfit
+    NONBOARD=auto()    # N - Non board, pins without contact area with the board. Used in components with lead forms of types: Solder Lug, High Cable, or Quick Connect.
+    HOLE=auto()        # H - Hole, for physical holes that appear without the physical pin
+    UNDEFINED=auto()   # U - Undefined
+    @classmethod
+    def parse(cls,char):
+        edict = {
+            'S':cls.SMT,
+            'D':cls.SMTPAD,
+            'T':cls.THRUHOLE,
+            'R':cls.THRUHOLESZ,
+            'R':cls.PRESSFIT,
+            'N':cls.NONBOARD,
+            'H':cls.HOLE,
+            'U':cls.UNDEFINED
+            }
+        return edict[char]
+class ODB_EDA_PinElectricalType(Enum):
+    ELECTRICAL=auto()
+    MECHANICAL=auto()
+    UNDEFINED=auto()
+    @classmethod 
+    def parse(cls,char):
+        edict = {
+            'E':cls.ELECTRICAL,
+            'M':cls.MECHANICAL,
+            'U':cls.UNDEFINED
+            }
+        return edict[char]
+
+
+class ODB_EDA_PinRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        """PIN <name> <type> <xc> <yc> <fhs> <etype> <mtype>"""
+        # PIN 10 T 0.2 0.1105 0 E S
+        if line[0] != 'PIN':
+            raise ValueError(f"Got unexpected string {line}")
+        self.name = line[1]
+        self.pintype = line[2]   # T, B, S for thru-hole, blind, or surface
+        self.xc = float(line[3]) # | center of pin, relative to package datum
+        self.yc = float(line[4]) # |
+        self.fhs = line[5]       # finished hole size, should be 0 for v7
+        self.etype = ODB_EDA_PinElectricalType.parse(line[6])
+        self.mtype = ODB_EDA_PinMountTypes.parse(line[7])     # pin mount type, {S,D,T,R,P,N,H,U}
+    def __repr__(self):
+        return f'ODB_EDA_PinRecord(name={self.name},pintype={self.pintype},xc={self.xc},yc={self.yc},fhs={self.fhs},etype={self.etype},mtype={self.mtype})'
+
+class ODB_EDA_CircleRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        """CR <xc> <yc> <radius>"""
+        if line[0] != 'CR':
+            raise ValueError(f"Got unexpected string {line}")
+        xc = float(line[1])
+        yc = float(line[2])
+        self.c = Coordinate2(xc,yc)
+        self.radius = float(line[3])
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.CirclePolygon:
+        patch = mpl.patches.CirclePolygon((self.c.x + pos.x,self.c.y + pos.y),radius=self.radius,resolution=10,fill=True,fc=color)
+        return patch
+        
+class ODB_EDA_SquareRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        """SQ <xc> <yc> <half side>"""
+        if line[0] != 'SQ':
+            raise ValueError(f"Got unexpected string {line}")
+        xc = float(line[1])
+        yc = float(line[2])
+        self.c = Coordinate2(xc,yc)
+        self.halfside = float(line[3])
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.Rectangle:
+        # pos is package position?
+        xy = (self.c.x + pos.x - self.halfside, self.x.y+pos.y - self.halfside)
+        patch = mpl.patches.Rectangle(xy,width=2*self.halfside,height=2*self.side,fill=True,fc=color)
+        return patch
+    
+class ODB_EDA_RectangleRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        """RC <lower_left_x> <lower_left_y> <width> <height>"""
+        if line[0] != 'RC':
+            raise ValueError(f"Got unexpected string {line}")
+        x1 = float(line[1])
+        y1 = float(line[2])
+        x2 = float(line[3])
+        y2 = float(line[4])
+        self.p0 = Coordinate2(x1,y1)
+        self.width = x2
+        self.height = y2
+    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.Rectangle:
+        xy = (self.p0.x + pos.x-self.width/2, self.p0.y + pos.y-self.height/2)
+        patch = mpl.patches.Rectangle(xy,width=self.width,height=self.height,fill=True,fc=color)
+        return patch
+        
+class ODB_EDA_ContourRecord(ODB_EDA_Record):
+    """A Contour record has the same format as a Surface feature, but between CT and CE records"""
+    def __init__(self,txt_lines,unit: ODBUnit):
+        """
+        NOTE: txt_lines MUST contain ALL lines for the surface (from CT to CE)
+        All lines should be split by spaces ' '
+        """
+        self.unit = unit
+        if txt_lines[0][0] != 'CT' or txt_lines[-1][0] != 'CE':
+            raise ValueError(f"Could not find start and end of contour: {txt_lines}")
+        # The first line is the empty contour descriptor
+        self.polygons = []
+        poly_beg_idxs = []
+        poly_end_idxs = []
+        for i,line in enumerate(txt_lines[1:]):
+            if line[0] == 'CE':
+                """Contour end"""
+                break
+            elif line[0] == 'OB':
+                """Polygon begin"""
+                poly_beg_idxs.append(i+1)
+            elif line[0] == 'OE':
+                """Polygon end"""
+                poly_end_idxs.append(i+1)
+        poly_idxs = list(zip(poly_beg_idxs,poly_end_idxs))
+        for pidxs in poly_idxs:
+            self.polygons.append(ODBPolygon(txt_lines[pidxs[0]:pidxs[1]+1],self.unit))
+    def draw(self,ax,sym_dict,odbconf: ODBConfig, **patchkwargs):
+        for poly in self.polygons:
+            ax.add_patch(poly.getpatch(odbconf, **patchkwargs))  # NOTE: ignoring polarity for now, TODO
+    def getpatches(self,sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs) -> list[mpl.patches.Patch]:
+        patches = []
+        for poly in self.polygons:
+            patches.append(poly.getpatch(odbconf,pos_offset,**patchkwargs))  # NOTE: ignoring polarity for now, TODO
+        return patches
+            
+    def __repr__(self):
+        return f'ODB_EDA_Contour(polygons={self.polygons})'
+
+        
+
+class ODB_EDA_FeatureGroupType(Enum):
+    TEXT=0
+class ODB_EDA_FeatureGroupRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        """FGR <type>     only allowed <type> is TEXT"""
+        if line != ['FGR','TEXT']:
+            raise ValueError(f"Feature group does not match expected format FGR TEXT. Instead got: {line}")
+        self.grouptype = ODB_EDA_FeatureGroupType.TEXT
+
+class ODB_EDA_FeatureType(Enum):
+    COPPER=auto()
+    LAMINATE=auto()
+    HOLE=auto()
+    @classmethod 
+    def parse(cls,char):
+        edict = {
+            'C':cls.COPPER,
+            'L':cls.LAMINATE,
+            'H':cls.HOLE
+            }
+        return edict[char]
+        
+class ODB_EDA_FeatureIDRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        """FID <type> <lyr_num> <f_num>"""
+        if line[0] != 'FID':
+            raise ValueError(f"Got unexpected string {line}")
+        self.feature_type = ODB_EDA_FeatureType.parse(line[1])
+        self.layer_number = int(line[2])
+        self.feature_number = int(line[3])
+    def __repr__(self):
+        return f'ODB_EDA_FeatureIDRecord(feature_type={self.feature_type},layer_number={self.layer_number},feature_number={self.feature_number})'
+        
+class ODB_EDA_PropertyRecord(ODB_EDA_Record):
+    def __init__(self,line: list[str]):
+        """PRP <name> '<value>' n1 n2 ..."""
+        if line[0] != 'PRP':
+            raise ValueError(f"Got unexpected string {line}")
+        self.name = line[1]
+        self.value_str = line[2].strip("'")
+        self.numbers = []
+        if len(line) > 3:
+            self.numbers = [float(f) for f in line[3:]]
+    def __repr__(self):
+        return f'ODB_EDA_PropertyRecord(name={self.name},value_str={self.value_str},numbers={self.numbers})'
+
+
+class ODB_EDA_Pin:
+    def __init__(self,pin_record: ODB_EDA_PinRecord,
+                 outline_record: ODB_EDA_CircleRecord|ODB_EDA_SquareRecord|ODB_EDA_RectangleRecord|ODB_EDA_ContourRecord):
+        self.record = pin_record 
+        self.outline_record = outline_record
+    
+    def draw(self,ax, sym_dict, odbconf: ODBConfig):
+        patch = self.outline_record.getpatch(Coordinate2(0,0), odbconf)
+        ax.add_patch(patch)  # TODO implement remainder of drawing utils
+    
+    def __repr__(self):
+        return f'ODB_EDA_Pin(record={self.record},outline_record={self.outline_record})'
+
+class ODB_EDA_Package:
+    def __init__(self,pkg_record: ODB_EDA_PackageRecord, 
+                 outline_record: ODB_EDA_CircleRecord|ODB_EDA_SquareRecord|ODB_EDA_RectangleRecord|ODB_EDA_ContourRecord,
+                 property_recs: ODB_EDA_PropertyRecord=None,
+                 pins: list[ODB_EDA_Pin]=None):
+        self.record = pkg_record 
+        self.outline_record = outline_record
+        self.property_recs = property_recs or []
+        self.pins = pins or []
+    
+    def __repr__(self):
+        return f'ODB_EDA_Package(record={self.record},outline_record={self.outline_record},property_recs={self.property_recs},pins={self.pins})'
+
+class ODB_EDA_Subnet:
+    def __init__(self,subnet_record: ODB_EDA_SubnetRecord,feature_ids: list[ODB_EDA_FeatureIDRecord]):
+        self.record = subnet_record 
+        self.feature_ids = feature_ids
+    def __repr__(self):
+        return f'ODB_EDA_Subnet(record={self.record},feature_ids={self.feature_ids})'
+
+class ODB_EDA_Net:
+    def __init__(self,net_record: ODB_EDA_NetRecord,
+                 subnets: list[int]):
+        self.record = net_record
+        self.subnets = subnets
+    def __repr__(self):
+        return f'ODB_EDA_Net(record={self.record},subnets={self.subnets})'
+
+ODB_EDA_RecordClass = {
+    'HDR':ODB_EDA_HeaderRecord,
+    'LYR':ODB_EDA_LayersRecord,
+    'NET':ODB_EDA_NetRecord,
+    'SNT':ODB_EDA_SubnetRecord,
+    'PKG':ODB_EDA_PackageRecord,
+    'PIN':ODB_EDA_PinRecord,
+    'FGR':ODB_EDA_FeatureGroupRecord,
+    'FID':ODB_EDA_FeatureIDRecord,
+    'PRP':ODB_EDA_PropertyRecord,
+    'CR':ODB_EDA_CircleRecord,
+    'SQ':ODB_EDA_SquareRecord,
+    'RC':ODB_EDA_RectangleRecord,
+    #CT, CE, OB, OS, OC, and OE are handled separately
+    }
+
+class ODB_EDA_Data:
+    def __init__(self, odbconf: ODBConfig, stepname = '', stepidx = 0):
+        print("Starting to parse")
+        self.odbconf = odbconf
+        # Get step name and path
+        rp = odbconf.root_path
+        if stepname == '':
+            stepname = odbconf.matrix.matrix_steps[stepidx].name 
+        # Find matching step path, case-insensitive
+        # Windows seems to not care, Linux does
+        self.step_path = None
+        step_paths = list((rp/'steps').glob('*'))
+        step_path_names = [p.name for p in step_paths]
+        for i in range(len(step_path_names)):
+            if step_path_names[i].lower() == stepname.lower():
+                self.step_path = step_paths[i]
+                # stepname = step_path_names[i]
+        if not self.step_path.exists():
+            raise ValueError(f"Could not find stepfile with name {stepname} out of options: {step_path_names}.")
+        
+        fpath = self.step_path/'eda/data'
+        if not fpath.exists():
+            raise ValueError(f"File {fpath} does not exist!")
+        lines = []
+        with open(fpath,'r') as f:
+            lines = f.readlines()
+        # Clean
+        lines = [l.strip() for l in lines if l.strip()!='']
+        lines = [re.split(r'[\s\;]',l) for l in lines if not l.startswith('#')]
+        if len(lines) == 0:
+            raise ValueError("No lines")  # testing only
+
+        # Record types
+        print("Getting records...")
+        self.recs = []
+        cont_beg_idx = -1
+        for i,line in enumerate(lines):
+            if line[0] == 'CT':
+                cont_beg_idx = i
+            elif line[0] == 'CE':
+                if cont_beg_idx != -1:
+                    self.recs.append(ODB_EDA_ContourRecord(lines[cont_beg_idx:i+1],odbconf.default_unit))
+                    cont_beg_idx = -1
+                else:
+                    raise ValueError("Parse failed, unmatched contour begin/end.")
+            elif line[0] in ['OB','OS','OC','OE']:
+                pass  # polygons, handled in the ContourRecord
+            else:
+                reccls = ODB_EDA_RecordClass.get(line[0])
+                if reccls is not None:
+                    self.recs.append(reccls(line))
+                else:
+                    print(f"Miss: {line}")
+        
+        # Now find NET, PKG, and PIN records, and get their corresponding outline/fid/etc records
+        # "A PKG record must have an outline record as the immediate next entry
+        #  (an outline record can be more than one line). A PIN record does require
+        #  an outline record but not immediately after."
+        
+        # Parsing nets
+        self.nets = []
+        active_net = -1
+        net_subnets = []
+        active_subnet = -1
+        subnet_fids = []
+        # Parsing packages
+        self.packages = []
+        active_pkg = -1
+        pkg_outline_rec = None
+        pkg_props = []
+        pkg_pins = []  # temporary storing of pins
+        active_pin = -1
+        outline_pkg_classes = (ODB_EDA_CircleRecord,ODB_EDA_SquareRecord,ODB_EDA_RectangleRecord,ODB_EDA_ContourRecord)
+        # these signal that a package has ended:
+        pkg_break_classes = (ODB_EDA_HeaderRecord,ODB_EDA_LayersRecord,ODB_EDA_NetRecord,ODB_EDA_SubnetRecord,ODB_EDA_PackageRecord,ODB_EDA_FeatureGroupRecord,ODB_EDA_FeatureIDRecord)
+        
+        # PKG records first have an outline, then optional properties, then pins with their own outlines
+        # PKG continues until the next record begins which is one of:
+        #      HDR,LYR,NET,SNT,PKG,FGR,FID
+        # In practice, it seems like only PKG records follow, not sure if this is standard
+        
+        for i,rec in enumerate(self.recs):
+            if isinstance(rec,ODB_EDA_NetRecord):
+                if active_net != -1:
+                    # finish up and reset
+                    self.nets.append(ODB_EDA_Net(self.recs[active_net],net_subnets))
+                    active_net = -1
+                    active_subnet = -1
+                    net_subnets = []
+                    subnet_fids = []
+                active_net = i
+            elif isinstance(rec,ODB_EDA_FeatureIDRecord):
+                if active_subnet == -1:
+                    raise ValueError(f"Parse failed, feature id record (FID) without active subnet. Record #{i}.")
+                subnet_fids.append(rec)
+            elif isinstance(rec,ODB_EDA_SubnetRecord):
+                if active_net == -1:
+                    raise ValueError(f"Parse failed, subnet (SNT) without active net. Record #{i}.")
+                if active_subnet != -1:
+                    # finish previous subnet
+                    net_subnets.append(ODB_EDA_Subnet(self.recs[active_subnet],subnet_fids))
+                    subnet_fids = []
+                active_subnet = i
+            
+            if isinstance(rec,ODB_EDA_PackageRecord):
+                if active_pkg != -1:
+                    # finish up, reset
+                    self.packages.append(ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins))
+                    pkg_props = []
+                    pkg_pins = []
+                    active_pin = -1
+                    pkg_outline_rec = None
+                active_pkg = i
+            elif isinstance(rec,pkg_break_classes):
+                if active_pkg != -1:
+                    # finish up, reset
+                    # this probably won't ever occur
+                    self.packages.append(ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins))
+                    pkg_props = []
+                    pkg_pins = []
+                    active_pin = -1
+                    pkg_outline_rec = None
+                    active_pkg = -1
+            elif isinstance(rec,outline_pkg_classes):
+                if active_pkg == -1:
+                    raise ValueError(f"Parse failed, found outline records without active package. Record #{i}.")
+                if pkg_outline_rec is None:
+                    pkg_outline_rec = rec  # Update package outline
+                else:
+                    # Outline belongs to the active pin
+                    if active_pin == -1:
+                        raise ValueError(f"Parse failed, found outline records without active pin, and package already has outline. Record #{i}.")
+                    pkg_pins.append(ODB_EDA_Pin(self.recs[active_pin],rec))
+                    active_pin = -1  # done
+            elif isinstance(rec,ODB_EDA_PropertyRecord):
+                if active_pkg == -1:
+                    raise ValueError(f"Parse failed, found property (PRP) records without active package. Record #{i}.")
+                pkg_props.append(rec)
+            elif isinstance(rec,ODB_EDA_PinRecord):
+                if active_pin != -1:
+                    raise ValueError(f"Parse failed, pin overlaps with another pin? Record #{i}.")
+                active_pin = i 
+        
+        print("Done.")
 
 @dataclass 
 class ODBNetPoint:
