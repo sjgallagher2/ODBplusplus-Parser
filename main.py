@@ -20,19 +20,21 @@ import odbparse as odb
 root_name = 'examples/beagleboneblack'
 root_p = Path(root_name)
 odbconf = odb.load_ODB(root_p)
-odb.load_user_symbols(odbconf)  # Needs to be done manually
-# %%
+uer_sym_dict = odb.load_user_symbols(odbconf)  # Needs to be done manually
+# Load EDA data
+edadata = odb.ODB_EDA_Data(odbconf)
+# Load specific layers
+toplayer = odb.ODBLayer(odbconf,'top')
+bottomlayer = odb.ODBLayer(odbconf,'bottom')
+lyr4layer = odb.ODBLayer(odbconf,'lyr4')
+profile = odb.ODBLayer(odbconf,'profile',is_toplevel=True)
+
 # Get simulatable layer types
 layernames = []
 for layer in odbconf.matrix.matrix_layers:
     if layer.layertype in odb.SIMULATION_LAYER_TYPES:
         layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
 
-# Try constructing a new layer
-toplayer = odb.ODBLayer(odbconf,'top')
-bottomlayer = odb.ODBLayer(odbconf,'bottom')
-lyr4layer = odb.ODBLayer(odbconf,'lyr4')
-profile = odb.ODBLayer(odbconf,'profile',is_toplevel=True)
 
 # %% Plot layers
 fig,ax = plt.subplots(1,1,figsize=(7,7))
@@ -43,9 +45,6 @@ profile.featfile.draw(ax,fc=(0.8,0.1,0.1,alpha+0.2))
 toplayer.featfile.draw(ax,fc=(0.1,0.8,0.1,alpha))
 ax.autoscale()
 fig.tight_layout()
-
-# %% Parse eda/data file
-edadata = odb.ODB_EDA_Data(odbconf)
 
 # %% Plot packages
 fig,axs = plt.subplots(8,5,figsize=(12.75,7))
@@ -85,7 +84,7 @@ ax.set_aspect('equal')
 ax.set_box_aspect(1)
 alpha = 0.3
 profile.featfile.draw(ax,fc='none')#(0.8,0.1,0.1,alpha+0.2))
-toplayer.featfile.draw(ax,fc=(0.1,0.8,0.1,alpha))
+lyr4layer.featfile.draw(ax,fc=(0.1,0.8,0.1,alpha))
 edadata.draw_net(ax, netname, [lyr4layer,toplayer,bottomlayer],linecolor='r', fc='none')
 ax.autoscale()
 fig.tight_layout()
@@ -219,6 +218,7 @@ for n1,n2 in zip(path2,path2[1:]):
     ax.annotate("", xytext=(n1.x, n1.y), xy=(n2.x, n2.y),
             arrowprops=dict(arrowstyle="->"))
 
+# %% Convert to EMerge
 # Make something for EMerge
 
 # g1 is the networkx subgraph with only the nodes of interest, in some order
