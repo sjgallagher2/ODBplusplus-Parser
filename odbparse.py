@@ -16,6 +16,8 @@ import networkx as nx  # graph library for mapping nets to lines
 # For testing only
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+# from shapely import LineString
+
 
 from coordinate2 import Coordinate2
 
@@ -1325,7 +1327,6 @@ class ODBFeatureLine(ODBFeatureBase):
         linepath = mpl.path.Path(vtxs,codes)
         patch = mpl.patches.PathPatch(linepath,**patchkwargs)
         return [patch]
-        
     
     def __repr__(self):
         return f'ODBFeatureLine(pt_s={self.pt_s},pt_e={self.pt_e},sym_num={self.sym_num},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt},netname={self.netname},tracewidth={self.tracewidth})'
@@ -1954,6 +1955,64 @@ def load_user_symbols(odbconf: ODBConfig):
     print(f'Done. Found {len(usersym_dict)} symbols.')
     return usersym_dict
 
+def partition_non_branching(graph: nx.Graph):
+    """
+    Partition a graph into polylines (non-branching paths, or cycles).
+    There are many possible solutions. We'll traverse from a leaf until
+    we hit a branch or another leaf (possibly the original). Then all
+    traversed edges are split into a subgraph. Repeat until all edges
+    in the original graph are used in a subgraph.
+    """
+    graph = graph.copy()
+    unused_edges = set(graph.edges())
+    subgraphs = []
+    
+    def take_edge(u,v):
+        # Remove an edge from unused_edges, ignore order
+        unused_edges.discard((u,v))
+        unused_edges.discard((v,u))
+    
+    def walk_path(start, neighbor):
+        """
+        Starting at `start` and initially moving to `neighbor`, return the longest non-branching path
+        """
+        # To walk the graph, start with a leaf, find its neighbor, find neighbor's neighbors
+        # that aren't the leaf, keep going until we get >1 neighbors, excluding
+        # previously used edges
+        path = [start, neighbor]
+        take_edge(start, neighbor)
+
+        prev, curr = start, neighbor
+
+        while True:
+            nbrs = [n for n in graph.neighbors(curr) if n != prev]
+            next_edges = [(curr, n) for n in nbrs if (curr, n) in unused_edges or (n, curr) in unused_edges]
+
+            if len(next_edges) != 1:
+                break
+
+            _, nxt = next_edges[0]
+            path.append(nxt)
+            take_edge(curr, nxt)
+
+            prev, curr = curr, nxt
+        return path
+    
+    # 1. Handle paths starting at nodes with degree != 2
+    for node in graph.nodes():
+        if graph.degree(node) != 2:
+            for neighbor in list(graph.neighbors(node)):
+                if (node, neighbor) in unused_edges or (neighbor, node) in unused_edges:
+                    path = walk_path(node, neighbor)
+                    subgraphs.append(graph.subgraph(path).copy())
+
+    # 2. Handle remaining edges (cycles)
+    while unused_edges:
+        u, v = next(iter(unused_edges))
+        cycle = walk_path(u, v)
+        subgraphs.append(graph.subgraph(cycle).copy())
+
+    return subgraphs
 
 class ODBLayer:
     """
@@ -1996,7 +2055,7 @@ class ODBLayer:
             for ml in odbconf.matrix.matrix_layers:
                 if ml.name.lower() == layername.lower():
                     self.matrix_layer = ml
-            layer_paths = list((self.step_path/f'layers').glob('*'))
+            layer_paths = list((self.step_path/'layers').glob('*'))
             layer_paths = [lp for lp in layer_paths if lp.is_dir()]
             layer_path_names = [lp.name for lp in layer_paths]
         if not self.layer_root_path.exists():
@@ -2056,8 +2115,67 @@ class ODBLayer:
             self.form = self.matrix_layer.form 
             self.add_type = self.matrix_layer.add_type 
             self.color = self.matrix_layer.color
+        
+        # Generate a graph for this layer
+        layergraph = nx.Graph()
+        seg_symbol_nums = set()  # Set of symbol ids used for Line and Arc features
+        for i,feat in enumerate(self.featfile.features_list):
+            # both Line and Arc have pt_s and pt_e
+            if isinstance(feat,ODBFeatureLine) or isinstance(feat,ODBFeatureArc):
+                # add edge, give edge a feature and its number (for net lookup)
+                layergraph.add_edge(feat.pt_s,feat.pt_e,feature=feat,fnum=i)
+                seg_symbol_nums.add(feat.sym_num)
+        self.graph = layergraph
+        self.seg_symbol_nums = list(seg_symbol_nums)
 
-
+    def get_partitioned_graph(self,user_sym_dict: dict[str,ODBUserSymbol], feature_netnames: dict[int,str]|None = None):
+        """
+        Make a networkx graph of the layer, partitioned by symbol and continuity.
+        
+        To make polylines for traces, we want subtraces that:
+            1. Have the same tracewidth, join style, and cap style (i.e. same symbol)
+            2. Do not branch (but may loop)
+        
+        The non-branching requirement is convenient for many reasons of compatibility
+        with the largest number of graphics packages. The subtrace can be represented
+        entirely by its list of vertices, in order, from start to end.
+        
+        `feature_netnames` should be a dictionary from feature number to netname.
+        
+        returns: 
+            dictionary mapping symbol number to lists of subgraphs for that symbol,
+            where each subgraph has netname (if `feature_netnames` is given), and
+            each edge in a subgraph has an associated `feature` attribute. 
+        """
+        layer_symbol_subgraphs = {}  # sym_num : graph
+        for i,sym_num in enumerate(self.seg_symbol_nums):
+            # 1. Get symbol
+            symbol = self.featfile.symbol_dict.get(sym_num)
+            if symbol is None:
+                # Missed it, must be a user symbol
+                for ste in self.featfile.symbol_table:
+                    if ste.serial_num == sym_num:
+                        sym_name = ste.symbol_name 
+                        symbol = user_sym_dict[sym_name]
+                        break
+            # 2. Make subgraph from edges using this symbol
+            sym_edges = [(u,v) for u,v,data in self.graph.edges(data=True) if data['feature'].sym_num == sym_num]
+            g = self.graph.edge_subgraph(sym_edges)  # temporary
+            g.graph['symbol']=symbol
+            
+            # 3. Partition graph into non-branching polylines
+            layer_symbol_subgraphs[sym_num] = partition_non_branching(g)
+            
+            # 4. Assign net name to each subgraph
+            if feature_netnames is not None:
+                for sg in layer_symbol_subgraphs[sym_num]:
+                    if len(sg) == 0:
+                        continue
+                    # Only need first feature
+                    fnum = list(sg.edges(data=True))[0][2]['fnum']
+                    sg.graph['netname'] = feature_netnames.get(fnum)
+            
+        return layer_symbol_subgraphs
 
 
 class ODB_EDA_Record:  # parent class for EDA data records
@@ -2077,15 +2195,16 @@ class ODB_EDA_LayersRecord(ODB_EDA_Record):
 
 class ODB_EDA_NetRecord(ODB_EDA_Record):
     def __init__(self,line: list[str]):
-        pattern = re.compile(r"^NET\s(?P<name>[^;]*);?(?P<attrs>.*)?$")
+        pattern = re.compile(r"^NET\s(?P<name>[^;\s]*)\s?;?\s??(?P<attrs>.*)?$")
         m = pattern.match(' '.join(line))
         if m:
             self.name = m.group("name")
             self.attrs = m.group("attrs").split(',')
+            self.attrs = [a.strip() for a in self.attrs if len(a) > 0]
             if self.attrs == ['']:
                 self.attrs = []
         else:
-            raise ValueError(f"Could not match line of record type NET with text {line}")
+            raise ValueError(f"Could not match line of record type NET with text {' '.join(line)}")
         
 
 class ODB_EDA_SubnetSide(Enum):
@@ -2203,7 +2322,7 @@ class ODB_EDA_PinMountTypes(Enum):
             'D':cls.SMTPAD,
             'T':cls.THRUHOLE,
             'R':cls.THRUHOLESZ,
-            'R':cls.PRESSFIT,
+            'P':cls.PRESSFIT,
             'N':cls.NONBOARD,
             'H':cls.HOLE,
             'U':cls.UNDEFINED
@@ -2418,10 +2537,87 @@ class ODB_EDA_Package:
     def __repr__(self):
         return f'ODB_EDA_Package(record={self.record},outline_record={self.outline_record},property_recs={self.property_recs},pins={self.pins})'
 
+
+"""
+A _subnet_ is a single, continuous trace (which may be branching), defined in e.g. ODB++ 
+and IPC2581 by its line and arc segments and a symbol which defines the "paintbrush"
+(width, join style, and cap style).
+
+For CAD representation, we want to convert this to a set of polylines, each with their
+own linewidth for all elements in that polyline. Optionally, we can further decompose 
+the original subnet trace into non-branching polylines. In the end, all polylines are 
+unioned and offset (i.e. buffered, given thickness), or offset and then unioned, into 
+a final shape.
+
+We will define a _geomsubtrace_ as a single polyline with a single tracewidth, join style,
+and cap style, and a _geomtrace_ as a collection of geometric subtraces.
+"""
+
+class SVGJoinStyle:
+    MITER = auto()
+    ROUND = auto()
+    BEVEL = auto()
+
+class SVGCapStyle:
+    BUTT = auto()
+    SQUARE = auto()
+    ROUND = auto()
+    
+
+@dataclass
+class GeomSubtrace:
+    """    
+    """
+    vertices: list[Coordinate2]
+    tracewidth: float
+    join_style: SVGJoinStyle = SVGJoinStyle.ROUND
+    cap_style: SVGCapStyle = SVGCapStyle.ROUND
+    
+    @classmethod
+    def from_segments_symbols(cls,segments: list[ODBFeatureLine|ODBFeatureArc],symbol: ODBSymbol):
+        # Parse symbol
+        if isinstance(symbol,ODBRoundSymbol):
+            join_style = SVGJoinStyle.ROUND 
+            cap_style = SVGCapStyle.ROUND
+            tracewidth = symbol.diameter
+        elif isinstance(symbol,ODBSquareSymbol):
+            join_style = SVGJoinStyle.MITER
+            cap_style = SVGCapStyle.SQUARE  # not BUTT assuming symbol is centered on vertices
+            tracewidth = symbol.side
+        else:
+            # Asymmetric symbols like rectangles can only be horizontal or vertical, which
+            # unnecessarily constrains polylines, and seems stupid. If this becomes an issue,
+            # I will reconsider
+            raise NotImplementedError(f"Segments with symbol {symbol} are not implemented. Defaulting to ROUND cap with ROUND join.")
+        
+        # Parse segments into a graph
+        graph = nx.Graph()
+        for feat in segments:
+            # both Line and Arc has pt_s and pt_e
+            graph.add_edge(feat.pt_s,feat.pt_e)
+        
+        # Get segment vertices in order
+        leaf_nodes = [n for n,deg in graph.degree() if deg == 1]
+        if len(leaf_nodes) > 2:
+            raise ValueError("GeomSubtrace cannot be branching or disjoint.")
+        vtx_path = nx.shortest_path(graph,source=leaf_nodes[0],target=leaf_nodes[1])
+        
+        # Return
+        return cls(vtx_path,tracewidth,join_style,cap_style)
+        
+
+class GeomTrace:
+    """
+    """
+    pass
+
+
+
 class ODB_EDA_Subnet:
     def __init__(self,subnet_record: ODB_EDA_SubnetRecord,feature_ids: list[ODB_EDA_FeatureIDRecord]):
         self.record = subnet_record 
         self.feature_ids = feature_ids
+    
     def __repr__(self):
         return f'ODB_EDA_Subnet(record={self.record},feature_ids={self.feature_ids})'
 
@@ -2430,6 +2626,10 @@ class ODB_EDA_Net:
                  subnets: list[int]):
         self.record = net_record
         self.subnets = subnets
+        self.fnums = []
+        for sn in self.subnets:
+            self.fnums += [fid.feature_number for fid in sn.feature_ids]
+        self.fnums.sort()
     def __repr__(self):
         return f'ODB_EDA_Net(record={self.record},subnets={self.subnets})'
 
@@ -2477,7 +2677,7 @@ class ODB_EDA_Data:
             lines = f.readlines()
         # Clean
         lines = [l.strip() for l in lines if l.strip()!='']
-        lines = [re.split(r'[\s\;]',l) for l in lines if not l.startswith('#')]
+        lines = [l.split() for l in lines if not l.startswith('#')]
         if len(lines) == 0:
             raise ValueError("No lines")  # testing only
 
@@ -2606,6 +2806,11 @@ class ODB_EDA_Data:
                     raise ValueError(f"Parse failed, pin overlaps with another pin? Record #{i}.")
                 active_pin = i 
         
+        print("Loading netname lookup...")
+        self.feature_netnames = {}
+        for netname,net in self.nets.items():
+            for fnum in net.fnums:
+                self.feature_netnames[fnum] = netname
         print("Done.")
     def draw_net(self,ax,netname,layers: list[ODBLayer],linecolor='k',**patchkwargs):
         edanet = self.nets[netname]

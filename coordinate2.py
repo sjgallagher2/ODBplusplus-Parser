@@ -8,6 +8,7 @@ Created on Fri Mar  6 15:03:46 2026
 from typing import List
 import math
 from math import sqrt,pow,fabs
+from numpy import around
 
 pi = 3.14159265358979
 
@@ -15,9 +16,9 @@ pi = 3.14159265358979
 
 class Coordinate2:
     def __init__(self, x=0.0, y=0.0):
-        self.x = x
-        self.y = y
-        self._prec = 1e-10
+        self.x = around(x,7)
+        self.y = around(y,7)
+        self._prec = 1e-7
 
     def __iadd__(self, other):
         if isinstance(other, Coordinate2):
@@ -81,12 +82,6 @@ class Coordinate2:
             return ang * 180 / pi
         else:
             return ang
-
-    def print(self, newline=True):
-        if newline:
-            print(f"({self.x}, {self.y})")
-        else:
-            print(f"({self.x}, {self.y})", end='')
 
     def __add__(self, other):
         if isinstance(other, Coordinate2):

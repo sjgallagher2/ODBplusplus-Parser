@@ -27,6 +27,7 @@ dependencies = [
     "cadquery-ocp",
     "cadquery",
     "networkx",
+    "shapely",
 ]
 
 [tool.uv.sources]

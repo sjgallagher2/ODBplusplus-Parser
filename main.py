@@ -8,8 +8,11 @@ from pathlib import Path
 import numpy as np
 import networkx as nx  # graph library for mapping nets to lines
 
+import shapely
+from shapely import LineString  # library for performing boolean operations and buffering/offsetting traces
+# see also: https://github.com/proto3/cavaliercontours-python
+
 # For testing only
-import re
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from coordinate2 import Coordinate2
@@ -89,8 +92,58 @@ edadata.draw_net(ax, netname, [lyr4layer,toplayer,bottomlayer],linecolor='r', fc
 ax.autoscale()
 fig.tight_layout()
 
-# %%
-# Parse CADNet netlist file
+# %% Experiment with subnets
+fig,ax = plt.subplots(1,1,figsize=(7,7))
+ax.set_aspect('equal')
+ax.set_box_aspect(1)
+
+for netname,net in edadata.nets.items():
+    bufs = []
+    edanet: odb.ODB_EDA_Net = edadata.nets[netname]
+    for subnet in edanet.subnets:
+        for layer in [toplayer]:#,bottomlayer,lyr4layer]:
+            pts = subnet.get_trace_coords(layer)
+            if len(pts) > 0:
+                tracewidths = subnet.get_trace_widths(layer)
+                ls = LineString(pts)
+                buf = ls.buffer(tracewidths[0]/2*1e-3,quad_segs=2,join_style='round',cap_style='round')
+                bufs.append(buf)
+    if len(bufs) > 0:
+        if len(bufs) == 1:
+            xx,yy = bufs[0].exterior.coords.xy
+            x = xx.tolist()
+            y = yy.tolist()
+            ax.plot(x,y,'k')
+        bufs_union = shapely.disjoint_subset_union_all(bufs)
+        if bufs_union.geom_type == 'Polygon':
+            xx,yy = bufs_union.exterior.coords.xy
+            x = xx.tolist()
+            y = yy.tolist()
+            ax.plot(x,y,'k')
+        else:
+            for buf in bufs_union.geoms:
+                xx,yy = buf.exterior.coords.xy
+                x = xx.tolist()
+                y = yy.tolist()
+                ax.plot(x,y,'k')
+
+ax.autoscale()
+fig.tight_layout()
+
+# %% Experiment with CadQuery net rendering
+netname = 'MMC1_CLK'  # random net
+edanet: odb.ODB_EDA_Net = edadata.nets[netname]
+for subnet in edanet.subnets:
+    for layer in [toplayer]:#,bottomlayer,lyr4layer]:
+        pts = subnet.get_trace_coords(layer)
+        if len(pts) > 0:
+            tracewidths = subnet.get_trace_widths(layer)
+
+print(pts)
+print(tracewidths)
+
+    
+# %% Parse CADNet netlist file
 stepname = 'stp'
 
 fpath = odbconf.root_path/f'steps/{stepname}/netlists/cadnet/netlist'
