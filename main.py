@@ -15,7 +15,7 @@ from shapely import LineString  # library for performing boolean operations and 
 # For testing only
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from coordinate2 import Coordinate2
+from geom import Coordinate2
 
 import odbparse as odb
 

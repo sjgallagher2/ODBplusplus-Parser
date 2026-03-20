@@ -4,15 +4,16 @@ Created on Fri Mar  6 15:03:46 2026
 
 @author: SG1295
 """
-
+# std lib
 from typing import List
 import math
-from math import sqrt,pow,fabs
+from math import pow,fabs
+# dependencies
 from numpy import around
 
 pi = 3.14159265358979
 
-# Ported from my C++ Coordinate2 class with an LLM, not verified
+# Ported from my C++ Coordinate2 class with an LLM, not fully verified
 
 class Coordinate2:
     def __init__(self, x=0.0, y=0.0):
@@ -224,17 +225,3 @@ def sort_by_distance(pts: List[Coordinate2], center: Coordinate2) -> List[Coordi
             pts.pop(closest_idx)
             sz = len(ret)
     return ret
-
-
-if __name__ == '__main__':
-    p1 = Coordinate2()
-    p2 = Coordinate2(5,10)
-    p3 = Coordinate2(15,-5)
-    print(p1)
-    print(p2)
-    print(p3)
-    print(p1+p3)
-    print(p2+p3)
-    print(-p1)
-    print(-p1-p3)
-    

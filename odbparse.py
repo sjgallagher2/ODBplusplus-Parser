@@ -18,8 +18,9 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 # from shapely import LineString
 
-
+# Module
 from coordinate2 import Coordinate2
+from pcb_geom import circular_arc_to_path
 
 # os.path https://docs.python.org/3/library/os.path.html
 #  isdir()
@@ -34,80 +35,6 @@ def enum_contains(eclass: Enum,name: str):
         return True
     except KeyError:
         return False
-
-def circular_arc_to_path(center: Coordinate2, radius: float, angle_start_deg: float, angle_end_deg: float, cw: bool, standalone=False):
-    """
-    Outline generated from AI which cites https://github.com/fontello/svgpath
-    
-    Approximates a circular arc with a sequence of cubic Bezier curves.
-    For simplicity, this function assumes the arc is less than 90 degrees.
-    For larger arcs, it should be subdivided first.
-    
-    angles are in degrees, orientation defined by `cw` (clockwise)
-    assumes first point has already been added to path, unless standalone==True
-    in which case a MOVETO is prepended to the output
-    
-    Returns (vtxs,codes)
-        vtxs  List of 2-tuples with xy coordinates, for use with mpl.path.Path
-        codes List of mpl.path.Path codes for the spline. 
-    """
-    do_flip = False
-    if cw:
-        angle_start = np.deg2rad(angle_end_deg)
-        angle_end = np.deg2rad(angle_start_deg)
-        do_flip = True
-    else:
-        angle_start = np.deg2rad(angle_start_deg)
-        angle_end = np.deg2rad(angle_end_deg)
-    
-    
-    # Calculate start and end points
-    p0_x = center.x + radius * np.cos(angle_start)
-    p0_y = center.y + radius * np.sin(angle_start)
-    p3_x = center.x + radius * np.cos(angle_end)
-    p3_y = center.y + radius * np.sin(angle_end)
-    P0 = (p0_x, p0_y)
-    P3 = (p3_x, p3_y)
-
-    # Calculate angular span (ensure it's positive and < 90 deg for best results)
-    angle_span = angle_end - angle_start
-    if angle_span < 0:
-        angle_span += 2 * np.pi # Handle cases where end < start
-
-    # It's highly recommended to subdivide large angles into smaller ones (e.g., <= 90 deg)
-    if angle_span > np.pi / 2 + 1e-5:
-        # Handle subdivision in a more complete function (see online resources)
-        # print("Warning: Angle span > 90 degrees. Approximation error will be larger.")
-        # For a full implementation of arbitrary angles, refer to libraries 
-        # or detailed algorithms on [GitHub](https://github.com/fontello/svgpath)
-        pass 
-
-    # Calculate the 'L' value
-    L = (4/3) * radius * np.tan(angle_span / 4)
-
-    # Calculate unit tangent vectors at P0 and P3
-    # Tangent at angle t is (-sin(t), cos(t)) for ccw
-    T0 = (-np.sin(angle_start), np.cos(angle_start))
-    T3 = (-np.sin(angle_end), np.cos(angle_end)) # Tangent vector at P3 needs to point inward for the 'minus L*T1' formula
-
-    # Calculate control points P1 and P2
-    P1 = (P0[0] + L * T0[0], P0[1] + L * T0[1])
-    P2 = (P3[0] - L * T3[0], P3[1] - L * T3[1]) # Note the minus sign for T3
-
-    if do_flip:
-        vtxs = [P0, P1, P2]
-    else:
-        vtxs = [P1,P2,P3]
-    codes = [mpl.path.Path.CURVE4]*3
-    
-    if standalone:
-        vtxs = [P0] + vtxs
-        codes = [mpl.path.Path.MOVETO] + codes
-    
-    if do_flip:
-        vtxs = vtxs[::-1]
-    
-    return vtxs,codes
 
         
 class ODBLayerMatrixContext(Enum):
@@ -1278,7 +1205,7 @@ class ODBFeatureType(Enum):
 class ODBFeatureBase:
     pass
 class ODBFeatureLine(ODBFeatureBase):
-    def __init__(self,txt,unit: ODBUnit):
+    def __init__(self,txt,unit: ODBUnit, feature_number: int):
         """
         txt: list[str] split by space
         
@@ -1292,6 +1219,7 @@ class ODBFeatureLine(ODBFeatureBase):
         if len(txt) < 8:  # L + 7 args
             raise ValueError("Line feature does not have enough arguments.")
         self.unit = unit
+        self.fnum = feature_number
         xs = float(txt[1])
         ys = float(txt[2])
         self.pt_s = Coordinate2(xs,ys)
@@ -1332,7 +1260,7 @@ class ODBFeatureLine(ODBFeatureBase):
         return f'ODBFeatureLine(pt_s={self.pt_s},pt_e={self.pt_e},sym_num={self.sym_num},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt},netname={self.netname},tracewidth={self.tracewidth})'
         
 class ODBFeatureArc(ODBFeatureBase):
-    def __init__(self,txt,unit: ODBUnit):
+    def __init__(self,txt,unit: ODBUnit, feature_number: int):
         """
         txt: list[str] split by space
         
@@ -1347,6 +1275,7 @@ class ODBFeatureArc(ODBFeatureBase):
         cw Y for clockwise, N for counter clockwise
         """
         self.unit = unit
+        self.fnum = feature_number
         if len(txt) < 11:  # A + 10 args
             raise ValueError(f"Arc feature does not have enough arguments: {txt}")
         xs = float(txt[1])
@@ -1579,7 +1508,7 @@ class ODBFeatureSurface(ODBFeatureBase):
     the file, and will return an error.
     """
     
-    def __init__(self,txt_lines,unit: ODBUnit):
+    def __init__(self,txt_lines,unit: ODBUnit, feature_number: int):
         """
         NOTE: txt_lines MUST contain ALL lines for the surface (from S to SE)
         All lines should be split by spaces ' '
@@ -1588,6 +1517,7 @@ class ODBFeatureSurface(ODBFeatureBase):
         if txt_lines[0][0] != 'S' or txt_lines[-1][0] != 'SE':
             raise ValueError(f"Could not find start and end of surface: {txt_lines}")
         # The first line is the surface descriptor itself
+        self.fnum = feature_number
         self.pol = txt_lines[0][1]
         self.dcode = txt_lines[0][2]
         self.attrtxt = ''
@@ -1654,13 +1584,14 @@ class ODBFeaturePad(ODBFeatureBase):
                 Note: To maintain backward compatibility, values 0-7 are read
                 from legacy data, but saved in the new format.
     """
-    def __init__(self,txt,unit: ODBUnit):
+    def __init__(self,txt,unit: ODBUnit, feature_number: int):
         """
         txt: list[str] of string split by space ' '
         """
         if len(txt) < 7:
             raise ValueError(f"Found incorrect number of arguments for pad. Text: {txt}")
         self.unit = unit
+        self.fnum = feature_number
         px = float(txt[1])
         py = float(txt[2])
         self.p1 = Coordinate2(px,py)
@@ -1808,6 +1739,7 @@ class ODBFeatureFile:
         # surf_beg_idxs = []
         # surf_end_idxs = []
         surf_beg_idx = -1
+        feat_num = 1
         
         for i,line in enumerate(lines):
             # 1. Read features - Symbols Table
@@ -1852,22 +1784,28 @@ class ODBFeatureFile:
                 entry = ODBAttributeStringsEntry(serial_num,text)
                 self.attr_texts.append(entry)
                 
+            elif line[0] == 'U':
+                pass  # ignore unit, already read it
             
             # 4. Read features - Features List
             # The features list contains the features data
             # Line format:
             #   <type> <params> ; <atr>[=<value>],...
+            
             else:
                 # Parse features
                 if line[0] == 'L':
-                    feat = ODBFeatureLine(line,features_unit)
+                    feat = ODBFeatureLine(line,features_unit,feat_num)
                     self.features_list.append(feat)
+                    feat_num += 1
                 elif line[0] == 'A':
-                    feat = ODBFeatureArc(line,features_unit)
+                    feat = ODBFeatureArc(line,features_unit,feat_num)
                     self.features_list.append(feat)
+                    feat_num += 1
                 elif line[0] == 'P':
-                    feat = ODBFeaturePad(line,features_unit)
+                    feat = ODBFeaturePad(line,features_unit,feat_num)
                     self.features_list.append(feat)
+                    feat_num += 1
                 elif line[0] == 'S':
                     # surf_beg_idxs.append(i)
                     surf_beg_idx = i
@@ -1875,7 +1813,8 @@ class ODBFeatureFile:
                     if surf_beg_idx == -1:
                         raise ValueError("Parsing failed, Surface End record but no beginning found.")
                     # surf_end_idxs.append(i)
-                    self.features_list.append(ODBFeatureSurface(lines[surf_beg_idx:i+1],features_unit))
+                    self.features_list.append(ODBFeatureSurface(lines[surf_beg_idx:i+1],features_unit,feat_num))
+                    feat_num += 1  # surfaces count as a single feature
         
         # Parse symbols
         # print(f'Symbol table:\n{self.symbol_table}\n')
@@ -2119,16 +2058,17 @@ class ODBLayer:
         # Generate a graph for this layer
         layergraph = nx.Graph()
         seg_symbol_nums = set()  # Set of symbol ids used for Line and Arc features
-        for i,feat in enumerate(self.featfile.features_list):
+        for feat in self.featfile.features_list:
             # both Line and Arc have pt_s and pt_e
             if isinstance(feat,ODBFeatureLine) or isinstance(feat,ODBFeatureArc):
                 # add edge, give edge a feature and its number (for net lookup)
-                layergraph.add_edge(feat.pt_s,feat.pt_e,feature=feat,fnum=i)
+                layergraph.add_edge(feat.pt_s,feat.pt_e,feature=feat,fnum=feat.fnum)
                 seg_symbol_nums.add(feat.sym_num)
+                
         self.graph = layergraph
         self.seg_symbol_nums = list(seg_symbol_nums)
 
-    def get_partitioned_graph(self,user_sym_dict: dict[str,ODBUserSymbol], feature_netnames: dict[int,str]|None = None):
+    def get_partitioned_graph(self,user_sym_dict: dict[str,ODBUserSymbol], feature_netnames: dict[str,dict[int,str]]|None = None):
         """
         Make a networkx graph of the layer, partitioned by symbol and continuity.
         
@@ -2140,7 +2080,7 @@ class ODBLayer:
         with the largest number of graphics packages. The subtrace can be represented
         entirely by its list of vertices, in order, from start to end.
         
-        `feature_netnames` should be a dictionary from feature number to netname.
+        `feature_netnames` should be a dictionary of layername : dict(feature number : netname)
         
         returns: 
             dictionary mapping symbol number to lists of subgraphs for that symbol,
@@ -2173,7 +2113,8 @@ class ODBLayer:
                         continue
                     # Only need first feature
                     fnum = list(sg.edges(data=True))[0][2]['fnum']
-                    sg.graph['netname'] = feature_netnames.get(fnum)
+                    feat_net_lookup = feature_netnames[self.name]
+                    sg.graph['netname'] = feat_net_lookup.get(fnum)
             
         return layer_symbol_subgraphs
 
@@ -2626,10 +2567,7 @@ class ODB_EDA_Net:
                  subnets: list[int]):
         self.record = net_record
         self.subnets = subnets
-        self.fnums = []
-        for sn in self.subnets:
-            self.fnums += [fid.feature_number for fid in sn.feature_ids]
-        self.fnums.sort()
+        
     def __repr__(self):
         return f'ODB_EDA_Net(record={self.record},subnets={self.subnets})'
 
@@ -2768,6 +2706,17 @@ class ODB_EDA_Data:
                 active_subnet = i
             
             if isinstance(rec,ODB_EDA_PackageRecord):
+                if active_subnet != -1:
+                    # finish previous subnet
+                    net_subnets.append(ODB_EDA_Subnet(self.recs[active_subnet],subnet_fids))
+                    subnet_fids = []
+                if active_net != -1:
+                    # finish up and reset
+                    self.nets[self.recs[active_net].name] = ODB_EDA_Net(self.recs[active_net],net_subnets)
+                    active_net = -1
+                    active_subnet = -1
+                    net_subnets = []
+                    subnet_fids = []
                 if active_pkg != -1:
                     # finish up, reset
                     self.packages[self.recs[active_pkg].name] = ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins)
@@ -2807,10 +2756,13 @@ class ODB_EDA_Data:
                 active_pin = i 
         
         print("Loading netname lookup...")
-        self.feature_netnames = {}
+        self.feature_netnames = {}    # layer num : dict[feature number : netname]
         for netname,net in self.nets.items():
-            for fnum in net.fnums:
-                self.feature_netnames[fnum] = netname
+            for sn in net.subnets:
+                for fid in sn.feature_ids:
+                    if fid.layer_name not in self.feature_netnames.keys():
+                        self.feature_netnames[fid.layer_name] = {}
+                    self.feature_netnames[fid.layer_name][fid.feature_number] = netname
         print("Done.")
     def draw_net(self,ax,netname,layers: list[ODBLayer],linecolor='k',**patchkwargs):
         edanet = self.nets[netname]
