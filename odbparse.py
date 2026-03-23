@@ -1551,6 +1551,19 @@ class ODBFeatureSurface(ODBFeatureBase):
     def __repr__(self):
         return f'ODBFeatureSurface(polygons={self.polygons},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt})'
 
+class ODBFeaturePadOrientation(Enum):
+    DEG0_NOMIRROR=auto()
+    DEG90_NOMIRROR=auto()
+    DEG180_NOMIRROR=auto()
+    DEG270_NOMIRROR=auto()
+    DEG0_XMIRROR=auto()
+    DEG90_XMIRROR=auto()
+    DEG180_XMIRROR=auto()
+    DEG270_XMIRROR=auto()
+    DEGANY_NOMIRROR=auto()
+    DEGANY_XMIRROR=auto()
+
+
 class ODBFeaturePad(ODBFeatureBase):
     """
     <x> <y> -1 <sym_num> <resize_factor> <polarity> <dcode> <orient_def>      opt 1
@@ -1578,7 +1591,7 @@ class ODBFeaturePad(ODBFeatureBase):
     8 : any angle rotation, no mirror
     9 : any angle rotation, mirror in X axis
                 If the first number of orientation definition is an integer from 0
-                through 7, it is legacy date from before ODB++ V.7.0 and will be
+                through 7, it is legacy data from before ODB++ V.7.0 and will be
                 handled as in V.6.x. If the first number is 8 or 9, it is a two number
                 definition, with the following number representing rotation.
                 Note: To maintain backward compatibility, values 0-7 are read
@@ -1957,7 +1970,7 @@ class ODBLayer:
     """
     Class representing a PCB layer with features from an ODB++ archive
     """
-    def __init__(self,odbconf: ODBConfig, layername: str, is_toplevel=False, stepname = '', stepidx = 0):
+    def __init__(self,odbconf: ODBConfig, layername: str, user_sym_dict, is_toplevel=False, stepname = '', stepidx = 0):
         """
         Given ODB++ config and name or index of step to use (index is for `odbconf.matrix.matrix_steps`, 
         use default if only one step is present, otherwise stepname is preferred), 
@@ -2004,6 +2017,15 @@ class ODBLayer:
             self.featfile = ODBFeatureFile(self.layer_root_path/layername, self.odbconf)
         else:
             self.featfile = ODBFeatureFile(self.layer_root_path/'features', self.odbconf)
+        
+        # Add user symbols to featfile
+        if len(user_sym_dict) > 0:
+            symdict = self.featfile.symbol_dict 
+            for entry in self.featfile.symbol_table:
+                if entry.serial_num not in symdict.keys():
+                    if entry.symbol_name in user_sym_dict.keys():
+                        symdict[entry.serial_num] = user_sym_dict[entry.symbol_name]
+            self.featfile.symbol_dict = symdict  # make sure it overrides
         self.attrlist_path = self.layer_root_path/'attrlist'
         self.attrdict = {}
         if self.attrlist_path.exists():

@@ -435,3 +435,277 @@ class GeomSubtrace:
         cmds = tuple(cmds)
         # Return
         return cls(cmds,tracewidth,netname,join_style,cap_style)
+
+
+# Base class for symbol geometries
+class GeomSymbol:
+    def __init__(self):
+        pass
+    def to_mpl(self):
+        pass
+    def to_shapely(self):
+        pass
+
+"""
+SYMBOLS:
+    Round (a circle) - diameter
+    Rectangle - width and height
+    Rounded Rectangle - width, height, corner radius, list of corners to round
+    Chamfered Rectangle - width, height, corner radius, list of corners to chamfer
+    Diamond - width and height
+    Octagon - width, height, corner size (defines inner angle, see ODB++ symbol definitions)
+    Round Donut - outer diameter, inner diameter
+    Rectangle Donut - outer width, outer height, line width
+    Square/Round Donut - outer diameter, inner diameter
+    Rounded Rectangle Donut - outer width and height, line width, corner radius, list of corners to round
+"""
+
+class GeomSymbolRound(GeomSymbol):
+    def __init__(self, center: Coordinate2, diameter: float):
+        super().__init__()
+        self.center = center
+        self.diameter = diameter
+    def to_mpl(self, spline=False, resolution=10, **patchkwargs) -> mpl.patches.CirclePolygon:
+        if spline:
+            patch = mpl.patches.Circle((self.center.x,self.center.y),radius=self.diameter/2., **patchkwargs)  # spline circle
+        else:
+            patch = mpl.patches.CirclePolygon((self.center.x,self.center.y),radius=self.diameter/2.,resolution=resolution,**patchkwargs)
+        return patch
+    def to_shapely(self,resolution=10):
+        t = np.linspace(0,2*pi,resolution+1)  # N segments requires N+1 points
+        x = self.center.x + self.diameter*np.cos(t)/2 
+        y = self.center.y + self.diameter*np.sin(t)/2
+        return shapely.Polygon(list(zip(x,y)))
+    
+class GeomSymbolRectangle(GeomSymbol):
+    def __init__(self, origin: Coordinate2, width: float, height: float, centered=False):
+        """
+        Rectangle with width and height. By default, origin is bottom left corner. 
+        If centered==True, origin is in the center.
+        """
+        super().__init__()
+        self.origin = origin
+        self.width = width
+        self.height = height
+        self.centered = centered
+        
+    def to_mpl(self, **patchkwargs) -> mpl.patches.Rectangle:
+        if self.centered:
+            xy = (self.origin.x-self.width/2., self.origin.y-self.height/2.)
+        else:
+            xy = (self.origin.x, self.origin.y)
+        patch = mpl.patches.Rectangle(xy,self.width,self.height,**patchkwargs)
+        return patch
+    def to_shapely(self):
+        if self.centered:
+            vtxs = [
+                (self.origin.x-self.width/2., self.origin.y-self.height/2.), 
+                (self.origin.x+self.width/2., self.origin.y-self.height/2.),
+                (self.origin.x+self.width/2., self.origin.y+self.height/2.),
+                (self.origin.x-self.width/2., self.origin.y+self.height/2.),
+                (self.origin.x-self.width/2., self.origin.y-self.height/2.)
+                ]
+        else:
+            vtxs = [
+                (self.origin.x,self.origin.y),
+                (self.origin.x+self.width, self.origin.y),
+                (self.origin.x+self.width, self.origin.y+self.height),
+                (self.origin.x, self.origin.y+self.height),
+                (self.origin.x,self.origin.y)
+                ]
+        return shapely.Polygon(vtxs)
+
+class GeomCorner(Enum):
+    BOTTOMLEFT = auto()
+    BOTTOMRIGHT = auto()
+    TOPRIGHT = auto()
+    TOPLEFT = auto()
+
+def get_bezier_rounded_corner(pos: Coordinate2, corner: GeomCorner, radius: float):
+    """
+    Given corner vertex `pos`, corner type `corner`, and corner radius `radius`, calculate cubic Bezier control 
+    points for a rounded corner
+    """
+    mpl_CURVE4 = mpl.path.Path.CURVE4
+    a=radius
+    c = radius*4/3 * (np.sqrt(2) - 1)
+    # c=0.55228474983079
+
+    # transform manually
+    if corner == GeomCorner.BOTTOMLEFT:
+        x=pos.x+radius
+        y=pos.y+radius
+        vtxs = [(x-a,y),(x-a,y-c),(x-c,y-a),(x,y-a)]
+    elif corner == GeomCorner.BOTTOMRIGHT:
+        x=pos.x-radius
+        y=pos.y+radius
+        vtxs = [(x,y-a),(x+c,y-a),(x+a,y-c),(x+a,y)]
+    elif corner == GeomCorner.TOPRIGHT:
+        x=pos.x-radius
+        y=pos.y-radius
+        vtxs = [(x+a,y),(x+a,y+c),(x+c,y+a),(x,y+a)]
+    elif corner == GeomCorner.TOPLEFT:
+        x=pos.x+radius
+        y=pos.y-radius
+        vtxs = [(x,y+a),(x-c,y+a),(x-a,y+c),(x-a,y)]
+    codes = [mpl_CURVE4,mpl_CURVE4,mpl_CURVE4]  # NOTE: No MOVETO, must be added manually, in case you don't want it
+    
+    # transform
+    # ([np.array(vtx).reshape((2,1)) for vtx in vtxs])
+    return vtxs,codes
+
+def get_polygon_rounded_corner(pos: Coordinate2, corner: GeomCorner, radius: float, resolution: int =5):
+    """
+    Given corner vertex `pos`, corner type `corner`, and corner radius `radius`, calculate 
+    polygonal vertices for a rounded corner, inclusive of both end points. Always
+    goes counterclockwise.
+    Returns vertices as (x,y) tuples.
+    """
+    # transform manually
+    if corner == GeomCorner.BOTTOMLEFT:
+        x0=pos.x+radius
+        y0=pos.y+radius
+        tstart = pi
+        tstop = 3*pi/2
+    elif corner == GeomCorner.BOTTOMRIGHT:
+        x0=pos.x-radius
+        y0=pos.y+radius
+        tstart = 3*pi/2
+        tstop = 2*pi
+    elif corner == GeomCorner.TOPRIGHT:
+        x0=pos.x-radius
+        y0=pos.y-radius
+        tstart = 0
+        tstop = pi/2
+    elif corner == GeomCorner.TOPLEFT:
+        x0=pos.x+radius
+        y0=pos.y-radius
+        tstart = pi/2
+        tstop = pi
+    x = x0+radius*np.cos(np.linspace(tstart,tstop,resolution+1))
+    y = y0+radius*np.sin(np.linspace(tstart,tstop,resolution+1))
+    return list(zip(x,y))
+
+class GeomSymbolRoundedRectangle(GeomSymbol):
+    def __init__(self,origin: Coordinate2, width: float, height: float, corner_radius: float, corners: list[GeomCorner]=None, centered=False):
+        """
+        Rectangle with rounded corners, . By default, origin is bottom left corner. 
+        If centered==True, origin is in the center.
+        If corners==None, all four corners are rounded.
+        `corners` has the order [bottom left, bottom right, top right, top left]
+        """
+        super().__init__()
+        self.origin = origin
+        self.centered = centered
+        self.width = width
+        self.height = height
+        self.corner_radius = corner_radius
+        self.corners = corners or [GeomCorner.BOTTOMLEFT,GeomCorner.BOTTOMRIGHT,GeomCorner.TOPRIGHT,GeomCorner.TOPLEFT]
+        
+        smallest_dim = self.width 
+        if self.height < self.width:
+            smallest_dim = self.height
+        self.oval = False
+        if np.isclose(self.corner_radius,smallest_dim):
+            self.oval = True
+        elif self.corner_radius > smallest_dim/2.:
+            raise ValueError(f"Corner radius {self.corner_radius} is larger than half the smallest side, {smallest_dim/2.}.")
+        
+        
+    def to_mpl(self, **patchkwargs):
+        # First get rectangle vertices
+        if self.centered:
+            corner_vtxs = [
+                Coordinate2(self.origin.x-self.width/2., self.origin.y-self.height/2.),
+                Coordinate2(self.origin.x+self.width/2., self.origin.y-self.height/2.),
+                Coordinate2(self.origin.x+self.width/2., self.origin.y+self.height/2.),
+                Coordinate2(self.origin.x-self.width/2., self.origin.y+self.height/2.),
+                ]
+        else:
+            corner_vtxs = [
+                Coordinate2(self.origin.x,self.origin.y),
+                Coordinate2(self.origin.x+self.width, self.origin.y),
+                Coordinate2(self.origin.x+self.width, self.origin.y+self.height),
+                Coordinate2(self.origin.x, self.origin.y+self.height),
+                ]
+        # Draw path, starting at bottom left, moving CCW
+        vtxs_all = []
+        codes_all = []
+        if GeomCorner.BOTTOMLEFT in self.corners:
+            vtxs,codes = get_bezier_rounded_corner(corner_vtxs[0], GeomCorner.BOTTOMLEFT, self.corner_radius)
+            vtxs_all = vtxs
+            codes_all = [mpl.path.Path.MOVETO]+codes
+        else:
+            vtxs_all.append((corner_vtxs[0].x,corner_vtxs[0].y))
+            codes_all.append(mpl.path.Path.MOVETO)
+        
+        if GeomCorner.BOTTOMRIGHT in self.corners:
+            vtxs,codes = get_bezier_rounded_corner(corner_vtxs[1], GeomCorner.BOTTOMRIGHT, self.corner_radius)
+            vtxs_all = vtxs_all + vtxs
+            codes_all = codes_all+[mpl.path.Path.LINETO]+codes
+        else:
+            vtxs_all.append((corner_vtxs[1].x,corner_vtxs[1].y))
+            codes_all.append(mpl.path.Path.LINETO)
+        
+        if GeomCorner.TOPRIGHT in self.corners:
+            vtxs,codes = get_bezier_rounded_corner(corner_vtxs[2], GeomCorner.TOPRIGHT, self.corner_radius)
+            vtxs_all = vtxs_all + vtxs
+            codes_all = codes_all+[mpl.path.Path.LINETO]+codes
+        else:
+            vtxs_all.append((corner_vtxs[2].x,corner_vtxs[2].y))
+            codes_all.append(mpl.path.Path.LINETO)
+        
+        if GeomCorner.TOPLEFT in self.corners:
+            vtxs,codes = get_bezier_rounded_corner(corner_vtxs[3], GeomCorner.TOPLEFT, self.corner_radius)
+            vtxs_all = vtxs_all + vtxs
+            codes_all = codes_all+[mpl.path.Path.LINETO]+codes
+        else:
+            vtxs_all.append((corner_vtxs[3].x,corner_vtxs[3].y))
+            codes_all.append(mpl.path.Path.LINETO)
+        
+        # Finish
+        vtxs_all.append(vtxs_all[0])
+        codes_all.append(mpl.path.Path.LINETO)
+        
+        return mpl.patches.PathPatch(mpl.path.Path(vtxs_all,codes_all),**patchkwargs)
+    
+    
+    def to_shapely(self):
+        if self.centered:
+            corner_vtxs = [
+                Coordinate2(self.origin.x-self.width/2., self.origin.y-self.height/2.), 
+                Coordinate2(self.origin.x+self.width/2., self.origin.y-self.height/2.),
+                Coordinate2(self.origin.x+self.width/2., self.origin.y+self.height/2.),
+                Coordinate2(self.origin.x-self.width/2., self.origin.y+self.height/2.),
+                ]
+        else:
+            corner_vtxs = [
+                Coordinate2(self.origin.x,self.origin.y),
+                Coordinate2(self.origin.x+self.width, self.origin.y),
+                Coordinate2(self.origin.x+self.width, self.origin.y+self.height),
+                Coordinate2(self.origin.x, self.origin.y+self.height),
+                ]
+        
+        vtxs_all = []
+        if GeomCorner.BOTTOMLEFT in self.corners:
+            vtxs_all = vtxs_all + get_polygon_rounded_corner(corner_vtxs[0], GeomCorner.BOTTOMLEFT, self.corner_radius)
+        else:
+            vtxs_all.append((corner_vtxs[0].x,corner_vtxs[0].y))
+        if GeomCorner.BOTTOMRIGHT in self.corners:
+            vtxs_all = vtxs_all + get_polygon_rounded_corner(corner_vtxs[1], GeomCorner.BOTTOMRIGHT, self.corner_radius)
+        else:
+            vtxs_all.append((corner_vtxs[1].x,corner_vtxs[1].y))
+        if GeomCorner.TOPRIGHT in self.corners:
+            vtxs_all = vtxs_all + get_polygon_rounded_corner(corner_vtxs[2], GeomCorner.TOPRIGHT, self.corner_radius)
+        else:
+            vtxs_all.append((corner_vtxs[2].x,corner_vtxs[2].y))
+        if GeomCorner.TOPLEFT in self.corners:
+            vtxs_all = vtxs_all + get_polygon_rounded_corner(corner_vtxs[3], GeomCorner.TOPLEFT, self.corner_radius)
+        else:
+            vtxs_all.append((corner_vtxs[3].x,corner_vtxs[3].y))
+        
+        vtxs_all.append(vtxs_all[0])  # close
+        
+        return shapely.Polygon(vtxs_all)
+        
+
