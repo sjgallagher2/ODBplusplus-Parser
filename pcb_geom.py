@@ -9,7 +9,7 @@ from typing import List
 import math
 from math import pow,fabs,sin,cos,tan
 from enum import Enum,auto
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 # dependencies
 import numpy as np
 from numpy import around
@@ -112,11 +112,11 @@ class GeomSubtraceArcOrientation(Enum):
     CW = auto()
     CCW = auto()
 
-class GeomSubtraceCommand:
+class GeomCommand:
     pass
 
 @dataclass
-class GeomSubtraceStart(GeomSubtraceCommand):
+class GeomCommandStart(GeomCommand):
     pt: Coordinate2
     
     def to_mpl_path(self):
@@ -126,7 +126,7 @@ class GeomSubtraceStart(GeomSubtraceCommand):
         return [(self.pt.x,self.pt.y)],[mpl_MOVETO]
 
 @dataclass
-class GeomSubtraceLineTo(GeomSubtraceCommand):
+class GeomCommandLineTo(GeomCommand):
     pt: Coordinate2 
     
     def to_mpl_path(self):
@@ -136,7 +136,7 @@ class GeomSubtraceLineTo(GeomSubtraceCommand):
         return [(self.pt.x,self.pt.y)],[mpl_LINETO]
 
 @dataclass
-class GeomSubtraceArcTo(GeomSubtraceCommand):
+class GeomCommandArcTo(GeomCommand):
     end_pt: Coordinate2 
     center_pt: Coordinate2
     orientation: GeomSubtraceArcOrientation
@@ -150,17 +150,20 @@ class GeomSubtraceArcTo(GeomSubtraceCommand):
         p2 = self.end_pt
         cw = self.orientation == GeomSubtraceArcOrientation.CW
         rad = (p1-self.center_pt).magnitude()
-        angle_start_deg = (p1-self.center_pt).angle(True)%360
-        angle_end_deg = (p2-self.center_pt).angle(True)%360
-        
-        # Check if we need to break the arc up into smaller (<= 90 degrees) segments
-        if cw:
-            angle_span = (angle_start_deg - angle_end_deg)
+        if p1 == p2:
+            # circle
+            angle_start_deg = 0
+            angle_end_deg = 360
+            angle_span = 360
         else:
-            angle_span = (angle_end_deg - angle_start_deg)
-
-        if angle_span < 0:
-            angle_span += 360  # Positive only
+            angle_start_deg = (p1-self.center_pt).angle(True)%360
+            angle_end_deg = (p2-self.center_pt).angle(True)%360
+            if cw:
+                angle_span = (angle_start_deg - angle_end_deg)
+            else:
+                angle_span = (angle_end_deg - angle_start_deg)    
+            if angle_span < 0:
+                angle_span += 360  # Positive only
 
         if angle_span > 180:
             # Break up into segments <= 90 degrees
@@ -192,7 +195,7 @@ class GeomSubtraceArcTo(GeomSubtraceCommand):
             vtxs += arc_vtxs
             codes += arc_codes
         return (vtxs,codes)
-    def linearize(self,prevpt: Coordinate2, resolution=10):
+    def linearize(self,prevpt: Coordinate2, resolution=15):
         """
         Discretize circular arc into `resolution` segments
         
@@ -202,16 +205,22 @@ class GeomSubtraceArcTo(GeomSubtraceCommand):
         p2 = self.end_pt
         cw = self.orientation == GeomSubtraceArcOrientation.CW
         rad = (p1-self.center_pt).magnitude()
-        angle_start_rad = (p1-self.center_pt).angle(False)%(2*pi)
-        angle_end_rad = (p2-self.center_pt).angle(False)%(2*pi)
-        
-        if cw:
-            angle_span = (angle_start_rad - angle_end_rad)
+        if p1 == p2:
+            # circle
+            angle_start_rad = 0
+            angle_end_rad = 2*pi
+            angle_span = 2*pi
         else:
-            angle_span = (angle_end_rad - angle_start_rad)
-
-        if angle_span < 0:
-            angle_span += 2*pi  # Positive only
+            angle_start_rad = (p1-self.center_pt).angle(False)%(2*pi)
+            angle_end_rad = (p2-self.center_pt).angle(False)%(2*pi)
+            
+            if cw:
+                angle_span = (angle_start_rad - angle_end_rad)
+            else:
+                angle_span = (angle_end_rad - angle_start_rad)
+    
+            if angle_span < 0:
+                angle_span += 2*pi  # Positive only
         
         if cw:
             t = np.linspace(angle_start_rad,angle_start_rad-angle_span,resolution)
@@ -240,32 +249,32 @@ class GeomSubtrace:
     A subtrace is a continuous, uniform polyline trace defined by commands (Start, 
     LineTo, or ArcTo), a tracewidth, a join style, and a cap style. 
     """
-    cmds: tuple[GeomSubtraceCommand]
+    cmds: tuple[GeomCommand]
     tracewidth: float
     netname: str
     join_style: SVGJoinStyle = SVGJoinStyle.ROUND
     cap_style: SVGCapStyle = SVGCapStyle.ROUND
     
-    def to_mpl(self) -> mpl.patches.PathPatch:
+    def to_mpl(self,**patchkwargs) -> mpl.patches.PathPatch:
         prev_pt = None
         all_vtxs = []
         all_codes = []
         for cmd in self.cmds:
-            if isinstance(cmd,GeomSubtraceArcTo):
+            if isinstance(cmd,GeomCommandArcTo):
                 vtxs,codes = cmd.to_mpl_path(Coordinate2(*prev_pt))
             else:
                 vtxs,codes = cmd.to_mpl_path()
             all_vtxs += vtxs
             all_codes += codes
             prev_pt = vtxs[-1]
-        patch = mpl.patches.PathPatch(mpl.path.Path(all_vtxs,all_codes))
+        patch = mpl.patches.PathPatch(mpl.path.Path(all_vtxs,all_codes),**patchkwargs)
         return patch
     
     def to_vtxs(self):
         prev_pt = None 
         all_vtxs = []
         for cmd in self.cmds:
-            if isinstance(cmd,GeomSubtraceArcTo):
+            if isinstance(cmd,GeomCommandArcTo):
                 vtxs = cmd.linearize(prev_pt)
             else:
                 vtxs = [cmd.pt]
@@ -275,11 +284,11 @@ class GeomSubtrace:
         vtx_tuples = [(c.x,c.y) for c in all_vtxs]
         return vtx_tuples
     
-    def to_shapely(self) -> shapely.Polygon:
+    def to_shapely(self,do_buffer=True) -> shapely.Polygon:
         prev_pt = None 
         all_vtxs = []
         for cmd in self.cmds:
-            if isinstance(cmd,GeomSubtraceArcTo):
+            if isinstance(cmd,GeomCommandArcTo):
                 vtxs = cmd.linearize(prev_pt)
             else:
                 vtxs = [cmd.pt]
@@ -288,11 +297,16 @@ class GeomSubtrace:
         
         vtx_tuples = [(c.x,c.y) for c in all_vtxs]
         ls = LineString(vtx_tuples)
-        buf = ls.buffer(self.tracewidth/2*1e-3,quad_segs=2,
-                        join_style=self.join_style.name.lower(),
-                        cap_style=self.cap_style.name.lower())
-        
-        return buf
+        # if ls.is_closed:
+        #     segs = list(map(shapely.LineString, zip(ls.coords[:-1], ls.coords[1:])))
+        #     ls = shapely.MultiLineString(segs)
+        if do_buffer:
+            buf = ls.buffer(self.tracewidth/2*1e-3,quad_segs=2,
+                            join_style=self.join_style.name.lower(),
+                            cap_style=self.cap_style.name.lower())
+            return buf
+        else:
+            return ls
     
     @classmethod
     def from_segments_and_symbol(cls,segments: list[odb.ODBFeatureLine|odb.ODBFeatureArc],symbol: odb.ODBSymbol,netname: str):
@@ -355,12 +369,12 @@ class GeomSubtrace:
             vtx_path = nx.shortest_path(graph,source=leaf_nodes[0],target=leaf_nodes[1])
             path_edges = list(zip(vtx_path,vtx_path[1:]))
         # Now use the graph to make a `cmds` array
-        cmds = [GeomSubtraceStart(vtx_path[0])]  # Initialize with start point
+        cmds = [GeomCommandStart(vtx_path[0])]  # Initialize with start point
         for edge in path_edges:
             feat = graph.get_edge_data(edge[0],edge[1])['feature']
             if isinstance(feat,odb.ODBFeatureLine):
                 # Note: Do NOT use feature here! They can be flipped
-                cmds.append(GeomSubtraceLineTo(edge[1]))
+                cmds.append(GeomCommandLineTo(edge[1]))
             elif isinstance(feat,odb.ODBFeatureArc):
                 cw = feat.cw
                 if feat.pt_e != edge[1]:
@@ -368,7 +382,7 @@ class GeomSubtrace:
                 orient = GeomSubtraceArcOrientation.CCW 
                 if cw:
                     orient = GeomSubtraceArcOrientation.CW 
-                cmds.append(GeomSubtraceArcTo(edge[1],feat.pt_c,orient))
+                cmds.append(GeomCommandArcTo(edge[1],feat.pt_c,orient))
         cmds = tuple(cmds)
         # Return
         return cls(cmds,tracewidth,netname,join_style,cap_style)
@@ -391,7 +405,7 @@ class GeomSubtrace:
             # unnecessarily constrains polylines, and seems stupid. If this becomes an issue,
             # I will reconsider
             raise NotImplementedError(f"Segments with symbol {symbol} are not implemented. Defaulting to ROUND cap with ROUND join.")
-            
+        
         branch_nodes = [n for n,deg in graph.degree() if deg > 2]
         if len(branch_nodes) > 0:
             # Try removing degenerate edges
@@ -418,12 +432,12 @@ class GeomSubtrace:
             vtx_path = nx.shortest_path(graph,source=leaf_nodes[0],target=leaf_nodes[1])
             path_edges = list(zip(vtx_path,vtx_path[1:]))
         # Now use the graph to make a `cmds` array
-        cmds = [GeomSubtraceStart(vtx_path[0])]  # Initialize with start point
+        cmds = [GeomCommandStart(vtx_path[0])]  # Initialize with start point
         for edge in path_edges:
             feat = graph.get_edge_data(edge[0],edge[1])['feature']
             if isinstance(feat,odb.ODBFeatureLine):
                 # Note: Do NOT use feature here! They can be flipped apparently??
-                cmds.append(GeomSubtraceLineTo(edge[1]))
+                cmds.append(GeomCommandLineTo(edge[1]))
             elif isinstance(feat,odb.ODBFeatureArc):
                 cw = feat.cw
                 if feat.pt_e != edge[1]:
@@ -431,7 +445,7 @@ class GeomSubtrace:
                 orient = GeomSubtraceArcOrientation.CCW 
                 if cw:
                     orient = GeomSubtraceArcOrientation.CW 
-                cmds.append(GeomSubtraceArcTo(edge[1],feat.pt_c,orient))
+                cmds.append(GeomCommandArcTo(edge[1],feat.pt_c,orient))
         cmds = tuple(cmds)
         # Return
         return cls(cmds,tracewidth,netname,join_style,cap_style)
@@ -459,61 +473,101 @@ SYMBOLS:
     Square/Round Donut - outer diameter, inner diameter
     Rounded Rectangle Donut - outer width and height, line width, corner radius, list of corners to round
 """
+@dataclass
+class GeomSymbolTransform():
+    scale: float = 1.0
+    rot_deg: float = 0.0
+    cw: bool = False
+    translate_x: float = 0.0
+    translate_y: float = 0.0
+    mirror_x: bool = False
+    
+    def matrix(self):
+        mat = np.eye(2)*self.scale
+        rrad = np.deg2rad(self.rot_deg)
+        if self.cw:
+            rrad *= -1
+        rot = np.array([[cos(rrad), -sin(rrad)], [sin(rrad),cos(rrad)]])
+        if self.mirror_x:
+            mat[0,0] *= -1 
+        return mat@rot
+    def apply(self,vtxs: list[tuple[float]]):
+        """Given vertices as a list of (x,y) tuples, apply transformation to all of them"""
+        # Convert vertices to Nx2x1 array
+        x = np.reshape(vtxs,(len(vtxs),2,1))
+        A = self.matrix()
+        y = A@x 
+        # convert back to list of tuples by reshaping to 2D matrix and taking tuples
+        y2 = y.reshape((len(vtxs),2))
+        y2[:,0] += self.translate_x
+        y2[:,1] += self.translate_y
+        return [tuple(r) for r in list(y2)]
+
 
 class GeomSymbolRound(GeomSymbol):
-    def __init__(self, center: Coordinate2, diameter: float):
+    def __init__(self, center: Coordinate2, diameter: float,transform: GeomSymbolTransform=GeomSymbolTransform()):
         super().__init__()
         self.center = center
         self.diameter = diameter
+        self.transform = transform
     def to_mpl(self, spline=False, resolution=10, **patchkwargs) -> mpl.patches.CirclePolygon:
+        rad = self.diameter*self.transform.scale/2.
         if spline:
-            patch = mpl.patches.Circle((self.center.x,self.center.y),radius=self.diameter/2., **patchkwargs)  # spline circle
+            patch = mpl.patches.Circle((self.center.x,self.center.y),radius=rad, **patchkwargs)  # spline circle
         else:
-            patch = mpl.patches.CirclePolygon((self.center.x,self.center.y),radius=self.diameter/2.,resolution=resolution,**patchkwargs)
+            patch = mpl.patches.CirclePolygon((self.center.x,self.center.y),radius=rad,resolution=resolution,**patchkwargs)
         return patch
     def to_shapely(self,resolution=10):
+        rad = self.diameter*self.transform.scale/2.
         t = np.linspace(0,2*pi,resolution+1)  # N segments requires N+1 points
-        x = self.center.x + self.diameter*np.cos(t)/2 
-        y = self.center.y + self.diameter*np.sin(t)/2
+        x = self.center.x + rad*np.cos(t) 
+        y = self.center.y + rad*np.sin(t)
         return shapely.Polygon(list(zip(x,y)))
     
 class GeomSymbolRectangle(GeomSymbol):
-    def __init__(self, origin: Coordinate2, width: float, height: float, centered=False):
+    def __init__(self, origin: Coordinate2, width: float, height: float, centered=False,transform: GeomSymbolTransform=None):
         """
         Rectangle with width and height. By default, origin is bottom left corner. 
         If centered==True, origin is in the center.
         """
         super().__init__()
-        self.origin = origin
         self.width = width
         self.height = height
         self.centered = centered
-        
-    def to_mpl(self, **patchkwargs) -> mpl.patches.Rectangle:
+        self.transform = transform or GeomSymbolTransform()
+        self.transform.translate_x += origin.x
+        self.transform.translate_y += origin.y
+    
+    def _get_vertices(self):
         if self.centered:
-            xy = (self.origin.x-self.width/2., self.origin.y-self.height/2.)
+            corner_vtxs = [
+                (self.width/2., -self.height/2.),
+                (self.width/2., self.height/2.),
+                (-self.width/2., +self.height/2.),
+                (-self.width/2., -self.height/2.),
+                (self.width/2., -self.height/2.),
+                ]
         else:
-            xy = (self.origin.x, self.origin.y)
-        patch = mpl.patches.Rectangle(xy,self.width,self.height,**patchkwargs)
+            corner_vtxs = [
+                (0.0,0.0),
+                (self.width, 0.0),
+                (self.width, self.height),
+                (0.0, self.height),
+                (0.0,0.0),
+                ]
+        return corner_vtxs
+    
+    def to_mpl(self, **patchkwargs) -> mpl.patches.Rectangle:
+        vtxs = self._get_vertices()
+        vtxs_xf = self.transform.apply(vtxs)
+        codes = [mpl.path.Path.MOVETO] + ([mpl.path.Path.LINETO]*(len(vtxs_xf)-1))
+        path = mpl.path.Path(vtxs_xf,codes)
+        patch = mpl.patches.PathPatch(path,**patchkwargs)
         return patch
     def to_shapely(self):
-        if self.centered:
-            vtxs = [
-                (self.origin.x-self.width/2., self.origin.y-self.height/2.), 
-                (self.origin.x+self.width/2., self.origin.y-self.height/2.),
-                (self.origin.x+self.width/2., self.origin.y+self.height/2.),
-                (self.origin.x-self.width/2., self.origin.y+self.height/2.),
-                (self.origin.x-self.width/2., self.origin.y-self.height/2.)
-                ]
-        else:
-            vtxs = [
-                (self.origin.x,self.origin.y),
-                (self.origin.x+self.width, self.origin.y),
-                (self.origin.x+self.width, self.origin.y+self.height),
-                (self.origin.x, self.origin.y+self.height),
-                (self.origin.x,self.origin.y)
-                ]
-        return shapely.Polygon(vtxs)
+        vtxs = self._get_vertices()
+        vtxs_xf = self.transform.apply(vtxs)
+        return shapely.Polygon(vtxs_xf)
 
 class GeomCorner(Enum):
     BOTTOMLEFT = auto()
@@ -587,20 +641,24 @@ def get_polygon_rounded_corner(pos: Coordinate2, corner: GeomCorner, radius: flo
     return list(zip(x,y))
 
 class GeomSymbolRoundedRectangle(GeomSymbol):
-    def __init__(self,origin: Coordinate2, width: float, height: float, corner_radius: float, corners: list[GeomCorner]=None, centered=False):
+    def __init__(self,origin: Coordinate2, width: float, height: float, corner_radius: float, 
+                 corners: list[GeomCorner]=None, centered=False,transform: GeomSymbolTransform=None):
         """
-        Rectangle with rounded corners, . By default, origin is bottom left corner. 
+        Rectangle with rounded corners. By default, origin is bottom left corner. 
         If centered==True, origin is in the center.
         If corners==None, all four corners are rounded.
         `corners` has the order [bottom left, bottom right, top right, top left]
         """
         super().__init__()
-        self.origin = origin
         self.centered = centered
         self.width = width
         self.height = height
         self.corner_radius = corner_radius
         self.corners = corners or [GeomCorner.BOTTOMLEFT,GeomCorner.BOTTOMRIGHT,GeomCorner.TOPRIGHT,GeomCorner.TOPLEFT]
+        self.transform = transform or GeomSymbolTransform()
+        self.transform.translate_x += origin.x
+        self.transform.translate_y += origin.y
+        
         
         smallest_dim = self.width 
         if self.height < self.width:
@@ -611,23 +669,25 @@ class GeomSymbolRoundedRectangle(GeomSymbol):
         elif self.corner_radius > smallest_dim/2.:
             raise ValueError(f"Corner radius {self.corner_radius} is larger than half the smallest side, {smallest_dim/2.}.")
         
-        
-    def to_mpl(self, **patchkwargs):
-        # First get rectangle vertices
+    def _get_vertices(self):
         if self.centered:
             corner_vtxs = [
-                Coordinate2(self.origin.x-self.width/2., self.origin.y-self.height/2.),
-                Coordinate2(self.origin.x+self.width/2., self.origin.y-self.height/2.),
-                Coordinate2(self.origin.x+self.width/2., self.origin.y+self.height/2.),
-                Coordinate2(self.origin.x-self.width/2., self.origin.y+self.height/2.),
+                Coordinate2(-self.width/2., -self.height/2.),
+                Coordinate2(+self.width/2., -self.height/2.),
+                Coordinate2(+self.width/2., +self.height/2.),
+                Coordinate2(-self.width/2., +self.height/2.),
                 ]
         else:
             corner_vtxs = [
-                Coordinate2(self.origin.x,self.origin.y),
-                Coordinate2(self.origin.x+self.width, self.origin.y),
-                Coordinate2(self.origin.x+self.width, self.origin.y+self.height),
-                Coordinate2(self.origin.x, self.origin.y+self.height),
+                Coordinate2(0.0,0.0),
+                Coordinate2(self.width, 0.0),
+                Coordinate2(self.width, self.height),
+                Coordinate2(0.0, self.height),
                 ]
+        return corner_vtxs
+    def to_mpl(self, **patchkwargs):
+        # First get rectangle vertices
+        corner_vtxs = self._get_vertices()
         # Draw path, starting at bottom left, moving CCW
         vtxs_all = []
         codes_all = []
@@ -667,24 +727,14 @@ class GeomSymbolRoundedRectangle(GeomSymbol):
         vtxs_all.append(vtxs_all[0])
         codes_all.append(mpl.path.Path.LINETO)
         
+        # Now apply transformation to vertices
+        vtxs_all = self.transform.apply(vtxs_all)
+        
         return mpl.patches.PathPatch(mpl.path.Path(vtxs_all,codes_all),**patchkwargs)
     
     
     def to_shapely(self):
-        if self.centered:
-            corner_vtxs = [
-                Coordinate2(self.origin.x-self.width/2., self.origin.y-self.height/2.), 
-                Coordinate2(self.origin.x+self.width/2., self.origin.y-self.height/2.),
-                Coordinate2(self.origin.x+self.width/2., self.origin.y+self.height/2.),
-                Coordinate2(self.origin.x-self.width/2., self.origin.y+self.height/2.),
-                ]
-        else:
-            corner_vtxs = [
-                Coordinate2(self.origin.x,self.origin.y),
-                Coordinate2(self.origin.x+self.width, self.origin.y),
-                Coordinate2(self.origin.x+self.width, self.origin.y+self.height),
-                Coordinate2(self.origin.x, self.origin.y+self.height),
-                ]
+        corner_vtxs = self._get_vertices()
         
         vtxs_all = []
         if GeomCorner.BOTTOMLEFT in self.corners:
@@ -706,6 +756,189 @@ class GeomSymbolRoundedRectangle(GeomSymbol):
         
         vtxs_all.append(vtxs_all[0])  # close
         
-        return shapely.Polygon(vtxs_all)
+        # Now apply transformation to vertices
+        vtxs_all = self.transform.apply(vtxs_all)
         
+        return shapely.Polygon(vtxs_all)
+
+class GeomPolygonPolarity(Enum):
+    POSITIVE = auto()
+    NEGATIVE = auto()
+
+@dataclass
+class GeomSimplePolygon:
+    """
+    A polygon is basically identical to a subtrace, but it's closed and filled
+    """
+    cmds: tuple[GeomCommand]
+    # netname: str    # this isn't parsed at the moment
+    polarity: GeomPolygonPolarity = GeomPolygonPolarity.POSITIVE
+    transform: GeomSymbolTransform = field(default_factory=GeomSymbolTransform)
+    
+    @classmethod
+    def from_odb_polygon(cls,feat: odb.ODBFeaturePolygon):
+        # feat.bs         # start position
+        # feat.poly_type  # ODBPolygonType.ISLAND or HOLE
+        # feat.segments   # ODBPolyCyrve or a Coordinate2 for a line
+        
+        cmds = [GeomCommandStart(feat.bs)]
+        for seg in feat.segments:
+            if isinstance(seg,odb.ODBPolyCurve):
+                if seg.cw:
+                    cmds.append(GeomCommandArcTo(seg.p2,seg.center,GeomSubtraceArcOrientation.CW))
+                else:
+                    cmds.append(GeomCommandArcTo(seg.p2,seg.center,GeomSubtraceArcOrientation.CCW))
+            else:
+                cmds.append(GeomCommandLineTo(seg))
+        if feat.poly_type == odb.ODBPolygonType.ISLAND:
+            polarity = GeomPolygonPolarity.POSITIVE
+        else:
+            polarity = GeomPolygonPolarity.NEGATIVE
+        
+        return cls(cmds,polarity)
+    
+    def to_vtxs(self):
+        prev_pt = None 
+        all_vtxs = []
+        for cmd in self.cmds:
+            if isinstance(cmd,GeomCommandArcTo):
+                vtxs = cmd.linearize(prev_pt)
+            else:
+                vtxs = [cmd.pt]
+            all_vtxs += vtxs
+            prev_pt = vtxs[-1]
+        
+        vtx_tuples = [(c.x,c.y) for c in all_vtxs]
+        return vtx_tuples
+    
+    def to_mpl(self,**patchkwargs) -> mpl.patches.PathPatch:
+        prev_pt = None
+        all_vtxs = []
+        all_codes = []
+        for cmd in self.cmds:
+            if isinstance(cmd,GeomCommandArcTo):
+                vtxs,codes = cmd.to_mpl_path(Coordinate2(*prev_pt))
+            else:
+                vtxs,codes = cmd.to_mpl_path()
+            all_vtxs += vtxs
+            all_codes += codes
+            prev_pt = vtxs[-1]
+        patch = mpl.patches.PathPatch(mpl.path.Path(all_vtxs,all_codes),**patchkwargs)
+        return patch
+    
+    def to_shapely(self) -> shapely.LineString:
+        prev_pt = None 
+        all_vtxs = []
+        for cmd in self.cmds:
+            if isinstance(cmd,GeomCommandArcTo):
+                vtxs = cmd.linearize(prev_pt)
+            else:
+                vtxs = [cmd.pt]
+            all_vtxs += vtxs
+            prev_pt = vtxs[-1]
+        
+        vtx_tuples = [(c.x,c.y) for c in all_vtxs]
+        ls = shapely.LineString(vtx_tuples)
+        return ls
+
+class GeomPolygon:
+    def __init__(self, shell: GeomSimplePolygon, holes: list[GeomSimplePolygon]):
+        self.shell = shell
+        self.holes = holes
+    
+    def to_shapely(self):
+        shell_ls = self.shell.to_shapely()
+        holes_ls = []
+        for hole in self.holes:
+            holes_ls.append(hole.to_shapely())
+        return shapely.Polygon(shell_ls,holes_ls)
+
+def get_pad_transform(pad: odb.ODBFeaturePad):
+    dl = {
+        odb.ODBFeaturePadOrientation.DEG0_NOMIRROR      :GeomSymbolTransform(),
+        odb.ODBFeaturePadOrientation.DEG90_NOMIRROR     :GeomSymbolTransform(rot_deg=90),
+        odb.ODBFeaturePadOrientation.DEG180_NOMIRROR    :GeomSymbolTransform(rot_deg=180),
+        odb.ODBFeaturePadOrientation.DEG270_NOMIRROR    :GeomSymbolTransform(rot_deg=270),
+        odb.ODBFeaturePadOrientation.DEG0_XMIRROR       :GeomSymbolTransform(rot_deg=0,mirror_x=True),
+        odb.ODBFeaturePadOrientation.DEG90_XMIRROR      :GeomSymbolTransform(rot_deg=90,mirror_x=True),
+        odb.ODBFeaturePadOrientation.DEG180_XMIRROR     :GeomSymbolTransform(rot_deg=180,mirror_x=True),
+        odb.ODBFeaturePadOrientation.DEG270_XMIRROR     :GeomSymbolTransform(rot_deg=270,mirror_x=True),
+        odb.ODBFeaturePadOrientation.DEGANY_NOMIRROR    :GeomSymbolTransform(rot_deg=pad.rot_deg),
+        odb.ODBFeaturePadOrientation.DEGANY_XMIRROR     :GeomSymbolTransform(rot_deg=pad.rot_deg,mirror_x=True)
+        }
+    # translate_x=pad.p1.x,translate_y=pad.p1.y
+    transform = dl[pad.orient_def]  # initialize, then update
+    transform.scale = pad.resize_factor
+    return transform
+    
+
+def parse_symbol(pad: odb.ODBFeaturePad, symbol: odb.ODBSymbol):
+    pos = pad.p1
+    xf = get_pad_transform(pad)
+    if isinstance(symbol,odb.ODBRoundSymbol):
+        symgeom = GeomSymbolRound(pos,symbol.diameter*1e-3,transform=xf)
+    elif isinstance(symbol,odb.ODBRectangleSymbol):
+        symgeom = GeomSymbolRectangle(pos, symbol.width*1e-3, symbol.height*1e-3,
+                                      centered=True,transform=xf)
+    elif isinstance(symbol,odb.ODBSquareSymbol):
+        symgeom = GeomSymbolRectangle(pos, symbol.side*1e-3, symbol.side*1e-3,
+                                      centered=True,transform=xf)
+    elif isinstance(symbol,odb.ODBRoundedRectangleSymbol):
+        symgeom = GeomSymbolRoundedRectangle(pos, symbol.width*1e-3, symbol.height*1e-3, 
+                                             symbol.radius*1e-3,centered=True,transform=xf)
+    elif isinstance(symbol,odb.ODBOvalSymbol):
+        crad = symbol.width/2
+        if symbol.width > symbol.height:
+            crad = symbol.height/2
+        symgeom = GeomSymbolRoundedRectangle(pos, symbol.width*1e-3, symbol.height*1e-3,
+                                             crad*1e-3,centered=True,transform=xf)
+    elif isinstance(symbol,odb.ODBHalfOvalSymbol):
+        crad = symbol.width/2
+        if symbol.width > symbol.height:
+            crad = symbol.height/2
+        corners = [GeomCorner.BOTTOMRIGHT,GeomCorner.TOPRIGHT]
+        symgeom = GeomSymbolRoundedRectangle(pos, symbol.width*1e-3, symbol.height*1e-3,
+                                             crad*1e-3,corners,centered=True,transform=xf)
+    elif isinstance(symbol,odb.ODBUserSymbol):
+        symbol_polygons = []
+        surface_polygons = []
+        for feat in symbol.featfile.features_list:
+            if isinstance(feat,odb.ODBFeaturePad):
+                symbol = symbol.featfile.symbol_dict[feat.sym_num]
+                symbol_geom = parse_symbol(feat,symbol)
+                symbol_polygons.append(symbol_geom)
+            elif isinstance(feat,odb.ODBFeatureSurface):
+                shell_poly = None
+                hole_polys = []
+                for poly in feat.polygons:
+                    if poly.poly_type == odb.ODBPolygonType.ISLAND:
+                        if shell_poly is not None:
+                            print("WARNING: More than one island for surface!")
+                        shell_poly = GeomSimplePolygon.from_odb_polygon(poly)
+                        # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
+                    else:
+                        hole_polys.append(GeomSimplePolygon.from_odb_polygon(poly))
+                        # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
+                        
+                surface_polygons.append(GeomPolygon(shell_poly,hole_polys))
+            else:
+                raise ValueError(f"User symbol with feature other than surface or pad: {feat}")
+        if len(surface_polygons) == 1 and len(symbol_polygons) == 0:
+            symgeom = surface_polygons[0]
+        elif len(surface_polygons) == 0 and len(symbol_polygons) == 1:
+            symgeom = symbol_polygons[0]
+        else:
+            print("Warning: Symbol with multiple features")
+            print(surface_polygons+symbol_polygons)
+            return surface_polygons+symbol_polygons
+
+    else:
+        raise NotImplementedError(f"Symbol {symbol} not yet implemented.")
+    return symgeom
+
+
+
+
+
+
 

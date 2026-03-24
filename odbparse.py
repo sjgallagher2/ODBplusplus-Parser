@@ -676,8 +676,7 @@ class ODBConfig:
 @dataclass
 class ODBRoundSymbol(ODBSymbol):
     """
-    Round (circle) symbol. Can be used for pads or for line and curve features. For pads, 
-    a getpatch() method is provided which can be plotted with matplotlib.
+    Round (circle) symbol. Can be used for pads or for line and curve features. 
     """
     unit: ODBUnit
     diameter: float
@@ -689,12 +688,6 @@ class ODBRoundSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit, float(m.group("d")))
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.CirclePolygon:
-        scale = get_unit_conversion(self.unit,odbconf.default_unit)
-        # patch = mpl.patches.Circle(xy,radius=scale*self.diameter/2.,fill=True,fc=color)  # spline circle
-        patch = mpl.patches.CirclePolygon((pos.x,pos.y),radius=scale*self.diameter/2.,resolution=10,fill=True,fc=color)
-        return patch
-
 
 @dataclass
 class ODBSquareSymbol(ODBSymbol):
@@ -708,11 +701,6 @@ class ODBSquareSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("s")))
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.Rectangle:
-        scale = get_unit_conversion(self.unit,odbconf.default_unit)
-        xy = (pos.x-scale*self.side/2, pos.y-scale*self.side/2)
-        patch = mpl.patches.Rectangle(xy,width=scale*self.side,height=scale*self.side,fill=True,fc=color)
-        return patch
 
 @dataclass
 class ODBRectangleSymbol(ODBSymbol):
@@ -727,12 +715,6 @@ class ODBRectangleSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("w")), float(m.group("h")))
-
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.Rectangle:
-        scale = get_unit_conversion(self.unit,odbconf.default_unit)
-        xy = (pos.x-scale*self.width/2, pos.y-scale*self.height/2)
-        patch = mpl.patches.Rectangle(xy,width=scale*self.width,height=scale*self.height,fill=True,fc=color)
-        return patch
 
 # ----------------------------
 # Rounded / Chamfered Rectangles
@@ -761,14 +743,7 @@ class ODBRoundedRectangleSymbol(ODBSymbol):
                 float(m.group("rad")),
                 m.group("corners"),
             )
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.FancyBboxPatch:
-        scale = get_unit_conversion(self.unit,odbconf.default_unit)
-        xy = (pos.x-scale*self.width/2, pos.y-scale*self.height/2)
-        patch = mpl.patches.FancyBboxPatch(xy,width=scale*self.width,height=scale*self.height,
-                                           boxstyle=f'Round, pad=0, rounding_size={scale*self.radius}',
-                                           fill=True,fc=color)
-        return patch
-
+        
 @dataclass
 class ODBChamferedRectangleSymbol(ODBSymbol):
     unit: ODBUnit
@@ -792,8 +767,6 @@ class ODBChamferedRectangleSymbol(ODBSymbol):
                 float(m.group("rad")),
                 m.group("corners"),
             )
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 
 # ----------------------------
@@ -817,20 +790,24 @@ class ODBOvalSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("w")), float(m.group("h")))
-        
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, color='k') -> mpl.patches.FancyBboxPatch:
-        scale = get_unit_conversion(self.unit,odbconf.default_unit)
-        xy = (pos.x-scale*self.width/2, pos.y-scale*self.height/2)
-        
-        if self.width > self.height:
-            patch = mpl.patches.FancyBboxPatch(xy,width=scale*self.width,height=scale*self.height,
-                                           boxstyle=f'Round, pad=0, rounding_size={scale*self.height/2}',
-                                           fill=True,fc=color)
-        else:
-            patch = mpl.patches.FancyBboxPatch(xy,width=scale*self.width,height=scale*self.height,
-                                           boxstyle=f'Round, pad=0, rounding_size={scale*self.width/2}',
-                                           fill=True,fc=color)
-        return patch
+
+@dataclass
+class ODBHalfOvalSymbol(ODBSymbol):
+    """
+    A half-oval is a rounded rectangle where the radius is equal to the shorter dimension, on one side only.
+    This creates a half-pill shape.
+    """
+    unit: ODBUnit
+    width: float
+    height: float
+
+    pattern = re.compile(r"^oval_h(?P<w>\d+(?:\.\d+)?)x(?P<h>\d+(?:\.\d+)?)$")
+
+    @classmethod
+    def parse(symcls, text, unit: ODBUnit):
+        m = symcls.pattern.match(text)
+        if m:
+            return symcls(unit,float(m.group("w")), float(m.group("h")))
 
 @dataclass
 class ODBDiamondSymbol(ODBSymbol):
@@ -845,8 +822,6 @@ class ODBDiamondSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("w")), float(m.group("h")))
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
     
 
 @dataclass
@@ -868,8 +843,6 @@ class ODBOctagonSymbol(ODBSymbol):
                 float(m.group("h")),
                 float(m.group("r"))
             )
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 @dataclass
 class ODBTriangleSymbol(ODBSymbol):
@@ -884,8 +857,6 @@ class ODBTriangleSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("b")), float(m.group("h")))
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 @dataclass
 class ODBEllipseSymbol(ODBSymbol):
@@ -900,8 +871,6 @@ class ODBEllipseSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("w")), float(m.group("h")))
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
     
 # ----------------------------
 # Donuts
@@ -920,8 +889,6 @@ class ODBRoundDonutSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("od")), float(m.group("id")))
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 
 @dataclass
@@ -937,8 +904,6 @@ class ODBSquareDonutSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("od")), float(m.group("id")))
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 
 @dataclass
@@ -954,8 +919,6 @@ class ODBSquareRoundDonutSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("od")), float(m.group("id")))
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 
 # ----------------------------
@@ -983,8 +946,6 @@ class ODBHoleSymbol(ODBSymbol):
                 float(m.group("tp")),
                 float(m.group("tm"))
             )
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 
 @dataclass
@@ -998,8 +959,6 @@ class ODBNullSymbol(ODBSymbol):
         m = symcls.pattern.match(text)
         if m:
             return symcls(unit,float(m.group("e")))
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        return None
 
 # -----------------
 # Thermals - Not Implemented Yet
@@ -1011,16 +970,12 @@ class ODBRoundThermalRoundedSymbol(ODBSymbol):
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
         raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 @dataclass
 class ODBRoundThermalSquaredSymbol(ODBSymbol):
     unit: ODBUnit 
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
-        raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
         raise NotImplementedError()
         
 @dataclass
@@ -1029,16 +984,12 @@ class ODBSquareThermalSymbol(ODBSymbol):
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
         raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 @dataclass
 class ODBSquareThermalOpenCornersSymbol(ODBSymbol):
     unit: ODBUnit 
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
-        raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
         raise NotImplementedError()
         
 @dataclass
@@ -1047,16 +998,12 @@ class ODBSquareRoundThermalSymbol(ODBSymbol):
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
         raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
         
 @dataclass
 class ODBRectangularThermalSymbol(ODBSymbol):
     unit: ODBUnit 
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
-        raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
         raise NotImplementedError()
         
 @dataclass
@@ -1065,16 +1012,12 @@ class ODBRectangularThermalOpenCornersSymbol(ODBSymbol):
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
         raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 @dataclass
 class ODBRoundedSquareThermalSymbol(ODBSymbol):
     unit: ODBUnit 
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
-        raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
         raise NotImplementedError()
         
 @dataclass
@@ -1083,16 +1026,12 @@ class ODBRoundedSquareThermalOpenCornersSymbol(ODBSymbol):
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
         raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 @dataclass
 class ODBRoundedRectangleThermalSymbol(ODBSymbol):
     unit: ODBUnit 
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
-        raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
         raise NotImplementedError()
 
 @dataclass
@@ -1101,8 +1040,6 @@ class ODBRoundedRectangleThermalOpenCornersSymbol(ODBSymbol):
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
         raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 @dataclass
 class ODBOvalThermalSymbol(ODBSymbol):
@@ -1110,16 +1047,12 @@ class ODBOvalThermalSymbol(ODBSymbol):
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
         raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
-        raise NotImplementedError()
 
 @dataclass
 class ODBOvalThermalOpenCornersSymbol(ODBSymbol):
     unit: ODBUnit 
     @classmethod
     def parse(symcls, text, unit: ODBUnit):
-        raise NotImplementedError()
-    def getpatch(self,pos: Coordinate2,odbconf: ODBConfig, color='k'):
         raise NotImplementedError()
 
 # ----------------------------
@@ -1133,6 +1066,7 @@ ODBSYMBOL_CLASSES = [                               # IMPLEMENTED
     ODBRoundedRectangleSymbol,                      # X
     ODBChamferedRectangleSymbol,                    # -
     ODBOvalSymbol,                                  # X
+    ODBHalfOvalSymbol,                              # X
     ODBDiamondSymbol,                               # -
     ODBOctagonSymbol,                               # -
     ODBRoundDonutSymbol,                            # -
@@ -1234,27 +1168,11 @@ class ODBFeatureLine(ODBFeatureBase):
             self.attrtxt = ' '.join(txt[8:])  # TODO Parse attrtext
         self.netname = ''     # These can be defined later; netname depends on netlist
         self.tracewidth = 0   # tracewidth depends on symbol lookup
-    
-    def draw(self,ax,sym_dict,odbconf: ODBConfig,*args, **kwargs):
-        xs = self.pt_s.x 
-        ys = self.pt_s.y 
-        xe = self.pt_e.x 
-        ye = self.pt_e.y 
-        ax.plot([xs,xe],[ys,ye],*args, **kwargs)
-    
+        
     def find_netname(self,netpoints):
         for netp in netpoints:
             if self.pt_s == netp.loc or self.pt_e == netp.loc:
                 self.netname = netp.netname
-    
-    def getpatches(self,sym_dict,odbconf: ODBConfig, pos_offset: Coordinate2 = Coordinate2(0,0), **patchkwargs) -> list[mpl.patches.Patch]:
-        MOVETO = mpl.path.Path.MOVETO
-        LINETO = mpl.path.Path.LINETO
-        vtxs = [(self.pt_s.x,self.pt_s.y), (self.pt_e.x,self.pt_e.y)]
-        codes = [MOVETO,LINETO]
-        linepath = mpl.path.Path(vtxs,codes)
-        patch = mpl.patches.PathPatch(linepath,**patchkwargs)
-        return [patch]
     
     def __repr__(self):
         return f'ODBFeatureLine(pt_s={self.pt_s},pt_e={self.pt_e},sym_num={self.sym_num},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt},netname={self.netname},tracewidth={self.tracewidth})'
@@ -1297,24 +1215,6 @@ class ODBFeatureArc(ODBFeatureBase):
         if len(txt) > 11:
             self.attrtxt = ' '.join(txt[11:])
     
-    def getpatches(self,sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs) -> list[mpl.patches.Patch]:
-        rad = (self.pt_s-self.pt_c).magnitude()  # should be very close to (pt_e - pt_c).magnitude()
-        angle_start_deg = (self.pt_s-self.pt_c).angle(degrees=True)
-        angle_end_deg = (self.pt_e-self.pt_c).angle(degrees=True)
-        
-        if self.cw:
-            arc = mpl.patches.Arc((self.pt_c.x,self.pt_c.y), width=2*rad, height=2*rad, 
-                                  angle=0, theta1=angle_end_deg, theta2=angle_start_deg,color='k',lw=1.5)
-        else:
-            arc = mpl.patches.Arc((self.pt_c.x,self.pt_c.y), width=2*rad, height=2*rad, 
-                                  angle=0, theta1=angle_start_deg, theta2=angle_end_deg,color='k',lw=1.5)
-        arc.set(**patchkwargs)
-        return [arc]
-    
-    def draw(self,ax,sym_dict,odbconf: ODBConfig,**patchkwargs):
-        arc = self.getpatches(sym_dict,odbconf,**patchkwargs)[0]
-        ax.add_patch(arc)
-    
     def find_netname(self,netpoints):
         for netp in netpoints:
             if self.pt_s == netp.loc or self.pt_e == netp.loc:
@@ -1330,19 +1230,6 @@ class ODBPolyCurve:
     p2: Coordinate2
     center: Coordinate2
     cw: bool
-    def getpatch(self,prev_pt:Coordinate2):
-        p1 = prev_pt
-        rad = (p1-self.center).magnitude()
-        angle_start_deg = (p1-self.center).angle(True)%360
-        angle_end_deg = (self.p2-self.center).angle(True)%360
-
-        if self.cw:
-            arc = mpl.patches.Arc((self.center.x,self.center.y), width=2*rad, height=2*rad, 
-                                  angle=0, theta1=angle_end_deg, theta2=angle_start_deg,color='k',lw=1.5)
-        else:
-            arc = mpl.patches.Arc((self.center.x,self.center.y), width=2*rad, height=2*rad, 
-                                  angle=0, theta1=angle_start_deg, theta2=angle_end_deg,color='k',lw=1.5)
-        return arc 
     
 class ODBPolygonType(Enum):
     ISLAND=auto()
@@ -1539,14 +1426,6 @@ class ODBFeatureSurface(ODBFeatureBase):
         poly_idxs = list(zip(poly_beg_idxs,poly_end_idxs))
         for pidxs in poly_idxs:
             self.polygons.append(ODBPolygon(txt_lines[pidxs[0]:pidxs[1]+1],self.unit))
-    def draw(self,ax,sym_dict,odbconf: ODBConfig, **patchkwargs):
-        for poly in self.polygons:
-            ax.add_patch(poly.getpatch(odbconf, **patchkwargs))  # NOTE: ignoring polarity for now, TODO
-    def getpatches(self,sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs) -> list[mpl.patches.Patch]:
-        patches = []
-        for poly in self.polygons:
-            patches.append(poly.getpatch(odbconf,pos_offset,**patchkwargs))  # NOTE: ignoring polarity for now, TODO
-        return patches
             
     def __repr__(self):
         return f'ODBFeatureSurface(polygons={self.polygons},pol={self.pol},dcode={self.dcode},attrtxt={self.attrtxt})'
@@ -1562,6 +1441,22 @@ class ODBFeaturePadOrientation(Enum):
     DEG270_XMIRROR=auto()
     DEGANY_NOMIRROR=auto()
     DEGANY_XMIRROR=auto()
+    
+    @classmethod
+    def parse(cls,code: int):
+        dl = {
+            0:cls.DEG0_NOMIRROR,
+            1:cls.DEG90_NOMIRROR,
+            2:cls.DEG180_NOMIRROR,
+            3:cls.DEG270_NOMIRROR,
+            4:cls.DEG0_XMIRROR,
+            5:cls.DEG90_XMIRROR,
+            6:cls.DEG180_XMIRROR,
+            7:cls.DEG270_XMIRROR,
+            8:cls.DEGANY_NOMIRROR,
+            9:cls.DEGANY_XMIRROR
+            }
+        return dl[code]
 
 
 class ODBFeaturePad(ODBFeatureBase):
@@ -1614,46 +1509,41 @@ class ODBFeaturePad(ODBFeatureBase):
             self.resize_factor = float(txt[5])
             self.polarity = txt[6]
             self.dcode = txt[7]
-            self.orient_def = txt[8]
-            self.attrtxt = ''
-            if len(txt) > 9:
-                self.attrtxt = ' '.join(txt[9:])
+            orient_def = int(txt[8])
+            self.orient_def = ODBFeaturePadOrientation.parse(orient_def)
+            if self.orient_def in [ODBFeaturePadOrientation.DEGANY_NOMIRROR,
+                                   ODBFeaturePadOrientation.DEGANY_XMIRROR]:
+                self.rot_deg = float(txt[9])
+                self.attrtxt = ''
+                if len(txt) > 10:
+                    self.attrtxt = ' '.join(txt[10:])
+            else:
+                self.rot_deg = None
+                self.attrtxt = ''
+                if len(txt) > 9:
+                    self.attrtxt = ' '.join(txt[9:])
         else:
             self.sym_num = int(txt[3])
             self.resize_factor = 1.0
             self.polarity = txt[4]
             self.dcode = txt[5]
-            self.orient_def = txt[6]
-            self.attrtxt = ''
-            if len(txt) > 7:
-                self.attrtxt = ' '.join(txt[7:])
-    
-    def getpatches(self,sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs) -> list[mpl.patches.Patch]:
-        if self.sym_num in sym_dict.keys():
-            # For now, only process existing symbols (no user symbols)
-            # sym_dict maps serial number to ODBxyzSymbol object
-            # if isinstance(sym_dict[self.sym_num],ODBRoundSymbol):
-            # TODO include orient_def for pad angle
-            sym = sym_dict[self.sym_num]
-            if isinstance(sym,ODBUserSymbol):
-                patches = sym.getpatches(self.p1,**patchkwargs)  # ODBUserSymbol handles its own position offset
-                return patches
+            
+            orient_def = int(txt[6])
+            self.orient_def = ODBFeaturePadOrientation.parse(orient_def)
+            if self.orient_def in [ODBFeaturePadOrientation.DEGANY_NOMIRROR,
+                                   ODBFeaturePadOrientation.DEGANY_XMIRROR]:
+                self.rot_deg = float(txt[7])
+                self.attrtxt = ''
+                if len(txt) > 8:
+                    self.attrtxt = ' '.join(txt[8:])
             else:
-                patch = sym.getpatch(self.p1+pos_offset,odbconf)
-                patch.set(**patchkwargs)
-                return [patch]          # make into list
-    
-    def draw(self,ax,sym_dict,odbconf: ODBConfig,**patchkwargs):        
-        patches = self.getpatches(sym_dict,odbconf,**patchkwargs)
-        if patches is not None:
-            for patch in patches:
-                ax.add_patch(patch)
-        else:
-            # print(f"WARNING: Empty patches for symbol {sym_dict[self.sym_num]}")
-            pass
-
+                self.rot_deg = None
+                self.attrtxt = ''
+                if len(txt) > 7:
+                    self.attrtxt = ' '.join(txt[7:])
+            
     def __repr__(self):
-        return f'ODBFeaturePad(p1={self.p1},sym_num={self.sym_num},resize_factor={self.resize_factor},dcode={self.dcode},orient_def={self.orient_def},attrtxt={self.attrtxt})'
+        return f'ODBFeaturePad(p1={self.p1},sym_num={self.sym_num},resize_factor={self.resize_factor},dcode={self.dcode},orient_def={self.orient_def},rot_deg={self.rot_deg},attrtxt={self.attrtxt})'
 
 
 
@@ -1857,23 +1747,6 @@ class ODBFeatureFile:
                 if entry.symbol_name in user_sym_dict.keys():                   
                     self.symbol_dict[entry.serial_num] = user_sym_dict[entry.symbol_name]
         self.has_user_symbols = True
-    
-    def getpatches(self,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs) -> list[mpl.patches.Patch]:
-        patches = []
-        if 'pos_offset' in patchkwargs.keys():
-            patchkwargs['pos_offset'] = pos_offset
-        for feat in self.features_list:
-            patches += feat.getpatches(self.symbol_dict,self.odbconf,pos_offset=pos_offset,**patchkwargs)
-        return patches
-
-    def draw(self,ax,linecolor='k',linestyle='--',**patchkwargs):
-        if not self.has_user_symbols:
-            print("Warning: No user symbols loaded into feature file. Use add_user_symbols().")        
-        for feat in self.features_list:
-            if isinstance(feat,ODBFeatureLine):
-                feat.draw(ax,self.symbol_dict,self.odbconf,color=linecolor)
-            else:
-                feat.draw(ax,self.symbol_dict,self.odbconf,ec=linecolor,**patchkwargs)
 
 class ODBUserSymbol(ODBSymbol):
     def __init__(self,name: str,featpath: Path, odbconf: ODBConfig):
@@ -1881,16 +1754,6 @@ class ODBUserSymbol(ODBSymbol):
         self.featpath = featpath
         self.odbconf = odbconf
         self.featfile = ODBFeatureFile(featpath,self.odbconf)
-    def getpatches(self, pos: Coordinate2, **patchkwargs) -> list[mpl.patches.Patch]:
-        """Convert features in featfile to patches for matplotlib"""
-        if 'fc' in patchkwargs.keys():
-            patchkwargs['fc'] = 'g'
-        if 'pos_offset' in patchkwargs.keys():
-            patchkwargs['pos_offset'] = pos
-        # print(f"Getting patches for symbol {self.name} at {pos}")
-        self.patches = self.featfile.getpatches(pos_offset=pos,**patchkwargs)
-        
-        return self.patches
 
 def load_user_symbols(odbconf: ODBConfig):
     print("Loading user symbols... ",end='')
@@ -1937,6 +1800,7 @@ def partition_non_branching(graph: nx.Graph):
         prev, curr = start, neighbor
 
         while True:
+            # nbrs = [n for n in graph.neighbors(curr) if n != prev and n != start]
             nbrs = [n for n in graph.neighbors(curr) if n != prev]
             next_edges = [(curr, n) for n in nbrs if (curr, n) in unused_edges or (n, curr) in unused_edges]
 
@@ -1951,7 +1815,8 @@ def partition_non_branching(graph: nx.Graph):
         return path
     
     # 1. Handle paths starting at nodes with degree != 2
-    for node in graph.nodes():
+    nodes_by_deg = sorted(graph.degree(), key=lambda x: x[1], reverse=False)
+    for node,deg in nodes_by_deg: # prefer leaf nodes first
         if graph.degree(node) != 2:
             for neighbor in list(graph.neighbors(node)):
                 if (node, neighbor) in unused_edges or (neighbor, node) in unused_edges:
@@ -1963,7 +1828,7 @@ def partition_non_branching(graph: nx.Graph):
         u, v = next(iter(unused_edges))
         cycle = walk_path(u, v)
         subgraphs.append(graph.subgraph(cycle).copy())
-
+        
     return subgraphs
 
 class ODBLayer:
@@ -2330,9 +2195,6 @@ class ODB_EDA_CircleRecord(ODB_EDA_Record):
         yc = float(line[2])
         self.c = Coordinate2(xc,yc)
         self.radius = float(line[3])
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, **patchkwargs) -> mpl.patches.CirclePolygon:
-        patch = mpl.patches.CirclePolygon((self.c.x + pos.x,self.c.y + pos.y),radius=self.radius,resolution=10,**patchkwargs)
-        return patch
 
 class ODB_EDA_SquareRecord(ODB_EDA_Record):
     def __init__(self,line: list[str]):
@@ -2343,11 +2205,6 @@ class ODB_EDA_SquareRecord(ODB_EDA_Record):
         yc = float(line[2])
         self.c = Coordinate2(xc,yc)
         self.halfside = float(line[3])
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, **patchkwargs) -> mpl.patches.Rectangle:
-        # pos is package position?
-        xy = (self.c.x + pos.x - self.halfside, self.x.y+pos.y - self.halfside)
-        patch = mpl.patches.Rectangle(xy,width=2*self.halfside,height=2*self.side,**patchkwargs)
-        return patch
     
 class ODB_EDA_RectangleRecord(ODB_EDA_Record):
     def __init__(self,line: list[str]):
@@ -2361,10 +2218,6 @@ class ODB_EDA_RectangleRecord(ODB_EDA_Record):
         self.p0 = Coordinate2(x1,y1)  # NOTE: Unlike Square and Circle outlines, (x1,y1) is the bottom left corner, not the center
         self.width = x2
         self.height = y2
-    def getpatch(self, pos: Coordinate2, odbconf: ODBConfig, **patchkwargs) -> mpl.patches.Rectangle:
-        xy = (self.p0.x+pos.x, self.p0.y+pos.y)
-        patch = mpl.patches.Rectangle(xy,width=self.width,height=self.height,**patchkwargs)
-        return patch
         
 class ODB_EDA_ContourRecord(ODB_EDA_Record):
     """A Contour record has the same format as a Surface feature, but between CT and CE records"""
@@ -2393,14 +2246,6 @@ class ODB_EDA_ContourRecord(ODB_EDA_Record):
         poly_idxs = list(zip(poly_beg_idxs,poly_end_idxs))
         for pidxs in poly_idxs:
             self.polygons.append(ODBPolygon(txt_lines[pidxs[0]:pidxs[1]+1],self.unit))
-    def draw(self,ax,sym_dict,odbconf: ODBConfig, **patchkwargs):
-        for poly in self.polygons:
-            ax.add_patch(poly.getpatch(odbconf, **patchkwargs))  # NOTE: ignoring polarity for now, TODO
-    def getpatches(self,sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs) -> list[mpl.patches.Patch]:
-        patches = []
-        for poly in self.polygons:
-            patches.append(poly.getpatch(odbconf,pos_offset,**patchkwargs))  # NOTE: ignoring polarity for now, TODO
-        return patches
             
     def __repr__(self):
         return f'ODB_EDA_Contour(polygons={self.polygons})'
@@ -2461,15 +2306,6 @@ class ODB_EDA_Pin:
         self.record = pin_record 
         self.outline_record = outline_record
     
-    def draw(self,ax, sym_dict, odbconf: ODBConfig):
-        if isinstance(self.outline_record,ODB_EDA_ContourRecord):
-            patches = self.outline_record.getpatches(None,odbconf,fc=(1.,0.84,0.29),ec='none')#sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs
-            for patch in patches:
-                ax.add_patch(patch)
-        else:
-            patch = self.outline_record.getpatch(Coordinate2(0,0),odbconf,fc=(1.,0.84,0.29),ec='none')
-            ax.add_patch(patch)
-    
     def __repr__(self):
         return f'ODB_EDA_Pin(record={self.record},outline_record={self.outline_record})'
 
@@ -2485,17 +2321,6 @@ class ODB_EDA_Package:
         self.outline_record = outline_record
         self.property_recs = property_recs or []
         self.pins = pins or []
-    
-    def draw(self,ax, sym_dict, odbconf: ODBConfig):
-        if isinstance(self.outline_record,ODB_EDA_ContourRecord):
-            patches = self.outline_record.getpatches(None,odbconf,fc='none',ec='k',lw=2)#sym_dict,odbconf: ODBConfig,pos_offset: Coordinate2 = Coordinate2(0,0),**patchkwargs
-            for patch in patches:
-                ax.add_patch(patch)
-        else:
-            patch = self.outline_record.getpatch(Coordinate2(0,0),odbconf,fc='none',ec='k',lw=2)
-            ax.add_patch(patch)
-        for pin in self.pins:
-            pin.draw(ax,None,odbconf)
     
     def __repr__(self):
         return f'ODB_EDA_Package(record={self.record},outline_record={self.outline_record},property_recs={self.property_recs},pins={self.pins})'
@@ -2527,52 +2352,52 @@ class SVGCapStyle:
     ROUND = auto()
     
 
-@dataclass
-class GeomSubtrace:
-    """    
-    """
-    vertices: list[Coordinate2]
-    tracewidth: float
-    join_style: SVGJoinStyle = SVGJoinStyle.ROUND
-    cap_style: SVGCapStyle = SVGCapStyle.ROUND
+# @dataclass
+# class GeomSubtrace:
+#     """    
+#     """
+#     vertices: list[Coordinate2]
+#     tracewidth: float
+#     join_style: SVGJoinStyle = SVGJoinStyle.ROUND
+#     cap_style: SVGCapStyle = SVGCapStyle.ROUND
     
-    @classmethod
-    def from_segments_symbols(cls,segments: list[ODBFeatureLine|ODBFeatureArc],symbol: ODBSymbol):
-        # Parse symbol
-        if isinstance(symbol,ODBRoundSymbol):
-            join_style = SVGJoinStyle.ROUND 
-            cap_style = SVGCapStyle.ROUND
-            tracewidth = symbol.diameter
-        elif isinstance(symbol,ODBSquareSymbol):
-            join_style = SVGJoinStyle.MITER
-            cap_style = SVGCapStyle.SQUARE  # not BUTT assuming symbol is centered on vertices
-            tracewidth = symbol.side
-        else:
-            # Asymmetric symbols like rectangles can only be horizontal or vertical, which
-            # unnecessarily constrains polylines, and seems stupid. If this becomes an issue,
-            # I will reconsider
-            raise NotImplementedError(f"Segments with symbol {symbol} are not implemented. Defaulting to ROUND cap with ROUND join.")
+#     @classmethod
+#     def from_segments_symbols(cls,segments: list[ODBFeatureLine|ODBFeatureArc],symbol: ODBSymbol):
+#         # Parse symbol
+#         if isinstance(symbol,ODBRoundSymbol):
+#             join_style = SVGJoinStyle.ROUND 
+#             cap_style = SVGCapStyle.ROUND
+#             tracewidth = symbol.diameter
+#         elif isinstance(symbol,ODBSquareSymbol):
+#             join_style = SVGJoinStyle.MITER
+#             cap_style = SVGCapStyle.SQUARE  # not BUTT assuming symbol is centered on vertices
+#             tracewidth = symbol.side
+#         else:
+#             # Asymmetric symbols like rectangles can only be horizontal or vertical, which
+#             # unnecessarily constrains polylines, and seems stupid. If this becomes an issue,
+#             # I will reconsider
+#             raise NotImplementedError(f"Segments with symbol {symbol} are not implemented. Defaulting to ROUND cap with ROUND join.")
         
-        # Parse segments into a graph
-        graph = nx.Graph()
-        for feat in segments:
-            # both Line and Arc has pt_s and pt_e
-            graph.add_edge(feat.pt_s,feat.pt_e)
+#         # Parse segments into a graph
+#         graph = nx.Graph()
+#         for feat in segments:
+#             # both Line and Arc has pt_s and pt_e
+#             graph.add_edge(feat.pt_s,feat.pt_e)
         
-        # Get segment vertices in order
-        leaf_nodes = [n for n,deg in graph.degree() if deg == 1]
-        if len(leaf_nodes) > 2:
-            raise ValueError("GeomSubtrace cannot be branching or disjoint.")
-        vtx_path = nx.shortest_path(graph,source=leaf_nodes[0],target=leaf_nodes[1])
+#         # Get segment vertices in order
+#         leaf_nodes = [n for n,deg in graph.degree() if deg == 1]
+#         if len(leaf_nodes) > 2:
+#             raise ValueError("GeomSubtrace cannot be branching or disjoint.")
+#         vtx_path = nx.shortest_path(graph,source=leaf_nodes[0],target=leaf_nodes[1])
         
-        # Return
-        return cls(vtx_path,tracewidth,join_style,cap_style)
+#         # Return
+#         return cls(vtx_path,tracewidth,join_style,cap_style)
         
 
-class GeomTrace:
-    """
-    """
-    pass
+# class GeomTrace:
+#     """
+#     """
+#     pass
 
 
 
@@ -2786,18 +2611,6 @@ class ODB_EDA_Data:
                         self.feature_netnames[fid.layer_name] = {}
                     self.feature_netnames[fid.layer_name][fid.feature_number] = netname
         print("Done.")
-    def draw_net(self,ax,netname,layers: list[ODBLayer],linecolor='k',**patchkwargs):
-        edanet = self.nets[netname]
-        for i,edasub in enumerate(edanet.subnets):
-            for j,fid in enumerate(edasub.feature_ids):
-                for layer in layers:
-                    if fid.layer_name.lower() == layer.name:
-                        feat = layer.featfile.features_list[fid.feature_number]
-                        if isinstance(feat,ODBFeatureLine):
-                            feat.draw(ax,layer.featfile.symbol_dict,self.odbconf,color=linecolor)
-                        else:
-                            feat.draw(ax,layer.featfile.symbol_dict,self.odbconf,ec=linecolor,**patchkwargs)
-        ax.autoscale()
 
 @dataclass 
 class ODBNetPoint:
