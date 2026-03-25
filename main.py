@@ -40,60 +40,6 @@ def plot_graph(g,ax=None,color=None,linestyle='-',randomize=False):#,marker='non
     
     ax.autoscale()
 
-def plot_shapely(polygon,ax=None):
-    if ax is None:
-        fig,ax = plt.subplots(1,1,figsize=(7,7))
-        ax.set_aspect('equal')
-        ax.set_box_aspect(1)
-    if polygon.geom_type == 'Polygon':
-        xx,yy = polygon.exterior.coords.xy
-        x = xx.tolist()
-        y = yy.tolist()
-        ax.plot(x,y,'k')
-        for polyint in polygon.interiors:
-            xx,yy = polyint.coords.xy
-            x = xx.tolist()
-            y = yy.tolist()
-            ax.plot(x,y,'k')
-    elif polygon.geom_type == 'LineString':
-        xx,yy = polygon.coords.xy
-        x = xx.tolist()
-        y = yy.tolist()
-        ax.plot(x,y,'k')
-
-def plot_shapely_as_patch(polygon,ax=None,**patchkwargs):
-    if ax is None:
-        fig,ax = plt.subplots(1,1,figsize=(7,7))
-        ax.set_aspect('equal')
-        ax.set_box_aspect(1)
-    if polygon.geom_type == 'Polygon':
-        vtxs = []
-        cmds = []
-        xx,yy = polygon.exterior.coords.xy
-        x = xx.tolist()
-        y = yy.tolist()
-        shell_vtxs = list(zip(x,y))
-        shell_cmds = [mpl.path.Path.MOVETO]+[mpl.path.Path.LINETO]*(len(shell_vtxs)-1)
-        shell_vtxs += [(0,0)]
-        shell_cmds += [mpl.path.Path.CLOSEPOLY]
-        vtxs = shell_vtxs
-        cmds = shell_cmds
-        
-        for polyint in polygon.interiors:
-            xx,yy = polyint.coords.xy
-            x = xx.tolist()
-            y = yy.tolist()
-            hole_vtxs = list(zip(x,y))
-            hole_cmds = [mpl.path.Path.MOVETO]+[mpl.path.Path.LINETO]*(len(hole_vtxs)-1)
-            hole_vtxs += [(0,0)]
-            hole_cmds += [mpl.path.Path.CLOSEPOLY]
-            
-            vtxs += hole_vtxs 
-            cmds += hole_cmds
-        path = mpl.path.Path(vtxs,cmds)
-        patch = mpl.patches.PathPatch(path,**patchkwargs)
-        ax.add_patch(patch)
-        ax.autoscale()
 
 root_name = 'examples/beagleboneblack'
 root_p = Path(root_name)
@@ -108,110 +54,42 @@ lyr4layer = odb.ODBLayer(odbconf,'lyr4',user_sym_dict)
 profile = odb.ODBLayer(odbconf,'profile',user_sym_dict,is_toplevel=True)
 
 # Get simulatable layer types
-layernames = []
-for layer in odbconf.matrix.matrix_layers:
-    if layer.layertype in odb.SIMULATION_LAYER_TYPES:
-        layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
+# layernames = []
+# for layer in odbconf.matrix.matrix_layers:
+#     if layer.layertype in odb.SIMULATION_LAYER_TYPES:
+#         layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
 
-# %%
-layer = toplayer  # choose default layer
-# break layer graph up on a per-symbol basis
-layer_symbol_subgraphs = layer.get_partitioned_graph(user_sym_dict,edadata.feature_netnames)
-# layer_symbol_subgraphs is a dict from symbol number -> list of subgraphs for that symbol
+# Ok enough setup - let's generate some layer geometry
+for layer in [toplayer]:#,lyr4layer]:#bottomlayer
+    layer_geoms = geom.parse_layer_geom(layer,user_sym_dict,edadata)
+    layer_shapelys = [gg.to_shapely() for gg in layer_geoms]
+    
+    
+    # Let's plot
+    fig,ax = plt.subplots(1,1,figsize=(7,7))
+    ax.set_aspect('equal')
+    ax.set_box_aspect(1)
+    big_union = shapely.disjoint_subset_union_all(layer_shapelys)
+    for buf in big_union.geoms:
+        geom.plot_shapely_as_patch(buf,ax)
+    ax.autoscale()
+    ax.set_title(layer.name)
 
-# make subtraces
-subtraces = {}
+# %% Problem layer
+layer_geoms = geom.parse_layer_geom(bottomlayer,user_sym_dict,edadata)
+layer_shapelys = [gg.to_shapely() for gg in layer_geoms]
 
-for symnum, sgs in layer_symbol_subgraphs.items():
-    for sg in sgs:
-        netname = sg.graph['netname']
-        if netname not in subtraces.keys():
-            subtraces[netname] = []
-        # make subtraces the easier way
-        subtraces[netname].append(geom.GeomSubtrace.from_graph(sg))
-        # plot_graph(sg,ax=ax)
-        # you can also make subtraces the hard way
-#         segs = []
-#         sym = sg.graph['symbol']
-#         netname = sg.graph['netname']
-#         for u,v,data in sg.edges(data=True):
-#             segs.append(data['feature'])
-#         subtraces.append(GeomSubtrace.from_segments_and_symbol(segs, sym, netname))
 
-# Union and plot subtraces with Shapely
-all_net_polygons = []
-for netnmame,netsubs in subtraces.items():
-    for subtrace in netsubs:
-        polygon = subtrace.to_shapely()
-        all_net_polygons.append(polygon)
-
-# Parse pads and surfaces
-symbol_polygons = []
-surface_polygons = []
-for feat in layer.featfile.features_list:
-    if isinstance(feat,odb.ODBFeaturePad):
-        symbol = layer.featfile.symbol_dict[feat.sym_num]
-        symbol_geom = geom.parse_symbol(feat,symbol)
-        symbol_polygons.append(symbol_geom.to_shapely())
-    elif isinstance(feat,odb.ODBFeatureSurface):
-        shell_poly = None
-        hole_polys = []
-        for poly in feat.polygons:
-            if poly.poly_type == odb.ODBPolygonType.ISLAND:
-                if shell_poly is not None:
-                    print("WARNING: More than one island for surface!")
-                shell_poly = geom.GeomSimplePolygon.from_odb_polygon(poly)
-                # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
-            else:
-                hole_polys.append(geom.GeomSimplePolygon.from_odb_polygon(poly))
-                # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
-                
-        surface_polygons.append(geom.GeomPolygon(shell_poly,hole_polys).to_shapely())
-
-# Now we have:
-#   all_net_polygons
-#   surface_polygons
-#   symbol_polygons
 # Let's plot
 fig,ax = plt.subplots(1,1,figsize=(7,7))
 ax.set_aspect('equal')
 ax.set_box_aspect(1)
-big_union = shapely.disjoint_subset_union_all(all_net_polygons+surface_polygons+symbol_polygons)
+big_union = shapely.disjoint_subset_union_all(layer_shapelys)
 for buf in big_union.geoms:
-    plot_shapely_as_patch(buf,ax)
+    geom.plot_shapely_as_patch(buf,ax)
+ax.autoscale()
+ax.set_title(layer.name)
 
-# %%
-fig,ax = plt.subplots(1,1,figsize=(7,7))
-ax.set_aspect('equal')
-ax.set_box_aspect(1)
-
-for feat in layer.featfile.features_list:
-    if feat.fnum == 3838:
-        break
-
-shell_poly = None
-hole_polys = []
-hole_shapelys = []
-for poly in feat.polygons:
-    if poly.poly_type == odb.ODBPolygonType.ISLAND:
-        if shell_poly is not None:
-            print("WARNING: More than one island for surface!")
-        shell_poly = geom.GeomSimplePolygon.from_odb_polygon(poly)
-        # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
-    else:
-        hole_polys.append(geom.GeomSimplePolygon.from_odb_polygon(poly))
-        hole_shapelys.append(hole_polys[-1].to_shapely())
-        # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
-
-# ax.add_patch(shell_poly.to_mpl())
-# for hole in hole_polys:
-    # ax.add_patch(hole.to_mpl(facecolor='r'))
-
-
-
-bigpoly = shapely.Polygon(shell_poly.to_shapely(),hole_shapelys)
-
-plot_shapely_as_patch(bigpoly,ax)
 # %% Convert to EMerge
 # Make something for EMerge
 

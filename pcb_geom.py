@@ -15,6 +15,7 @@ import numpy as np
 from numpy import around
 import networkx as nx
 import matplotlib as mpl
+import matplotlib.pyplot as plt
 import shapely
 from shapely import LineString  # library for performing boolean operations and buffering/offsetting traces
 
@@ -473,59 +474,101 @@ SYMBOLS:
     Square/Round Donut - outer diameter, inner diameter
     Rounded Rectangle Donut - outer width and height, line width, corner radius, list of corners to round
 """
-@dataclass
-class GeomSymbolTransform():
-    scale: float = 1.0
-    rot_deg: float = 0.0
-    cw: bool = False
-    translate_x: float = 0.0
-    translate_y: float = 0.0
-    mirror_x: bool = False
-    
-    def matrix(self):
-        mat = np.eye(2)*self.scale
-        rrad = np.deg2rad(self.rot_deg)
-        if self.cw:
+class GeomSymbolTransform:
+    """
+    Affine transformation
+    Applies scale and rotation, then translation after
+    """
+    def __init__(self, 
+                 scale: float = 1.0,
+                 rot_deg: float = 0.0,
+                 cw: bool = False,
+                 translate_x: float = 0.0,
+                 translate_y: float = 0.0,
+                 mirror_x: bool = False):
+        mat = np.eye(2)*scale
+        rrad = np.deg2rad(rot_deg)
+        if cw:
             rrad *= -1
         rot = np.array([[cos(rrad), -sin(rrad)], [sin(rrad),cos(rrad)]])
-        if self.mirror_x:
+        if mirror_x:
             mat[0,0] *= -1 
-        return mat@rot
+        # Calculate matrix, pad it with 1 row of zeros after last, 1 row of cols after last
+        # Result is 3x3
+        self.matrix = np.pad(mat@rot, ((0,1),(0,1)))
+        self.matrix[2,2] = 1
+        # Translation
+        self.matrix[0,2] = translate_x
+        self.matrix[1,2] = translate_y
+    
+    def set_translate_x(self,x0):
+        """Override current x translation (does NOT cascade)"""
+        self.matrix[0,2] = x0
+    def set_translate_y(self,y0):
+        """Override current y translation (does NOT cascade)"""
+        self.matrix[1,2] = y0
+    def get_translate_x(self):
+        return self.matrix[0,2]
+    def get_translate_y(self):
+        return self.matrix[1,2]
+    def get_scale(self):
+        return np.linalg.norm(self.matrix[:,0])
+        
     def apply(self,vtxs: list[tuple[float]]):
-        """Given vertices as a list of (x,y) tuples, apply transformation to all of them"""
-        # Convert vertices to Nx2x1 array
+        """Given vertices as a list of (x,y) tuples, apply transformation to all of them, translation last."""
+        # Convert vertices to Nx3x1 array with 1 is bottom of column
         x = np.reshape(vtxs,(len(vtxs),2,1))
-        A = self.matrix()
+        xpad = np.ones((len(vtxs),1,1))     # axis chaos
+        x = np.concatenate([x,xpad],axis=1) # axis chaos
+        
+        A = self.matrix
         y = A@x 
         # convert back to list of tuples by reshaping to 2D matrix and taking tuples
-        y2 = y.reshape((len(vtxs),2))
-        y2[:,0] += self.translate_x
-        y2[:,1] += self.translate_y
+        y2 = y.reshape((len(vtxs),3))[:,0:2]  # axis chaos
         return [tuple(r) for r in list(y2)]
-
+    
+    def cascade(self,other):
+        """
+        Cascade other transform on top of current transform.
+        """
+        if not isinstance(other,GeomSymbolTransform):
+            raise ValueError(f"Got unexpected type for cascade: {other}")
+        self.matrix = other.matrix @ self.matrix
+    
+    def copy(self):
+        ret = GeomSymbolTransform()
+        ret.matrix = self.matrix.copy()
+        return ret
+    
+    def __repr__(self):
+        return f"GeomSymbolTransform(matrix={self.matrix})"
 
 class GeomSymbolRound(GeomSymbol):
-    def __init__(self, center: Coordinate2, diameter: float,transform: GeomSymbolTransform=GeomSymbolTransform()):
+    def __init__(self, diameter: float,transform: GeomSymbolTransform=None):
         super().__init__()
-        self.center = center
         self.diameter = diameter
-        self.transform = transform
+        self.transform = transform or GeomSymbolTransform()
+        
     def to_mpl(self, spline=False, resolution=10, **patchkwargs) -> mpl.patches.CirclePolygon:
-        rad = self.diameter*self.transform.scale/2.
+        rad = self.diameter*self.transform.get_scale()/2.
         if spline:
-            patch = mpl.patches.Circle((self.center.x,self.center.y),radius=rad, **patchkwargs)  # spline circle
+            patch = mpl.patches.Circle((self.transform.get_translate_x(),
+                                        self.transform.get_translate_y()),
+                                       radius=rad, **patchkwargs)  # spline circle
         else:
-            patch = mpl.patches.CirclePolygon((self.center.x,self.center.y),radius=rad,resolution=resolution,**patchkwargs)
+            patch = mpl.patches.CirclePolygon((self.transform.get_translate_x(),
+                                               self.transform.get_translate_y()),radius=rad,
+                                              resolution=resolution,**patchkwargs)
         return patch
     def to_shapely(self,resolution=10):
-        rad = self.diameter*self.transform.scale/2.
+        rad = self.diameter*self.transform.get_scale()/2.
         t = np.linspace(0,2*pi,resolution+1)  # N segments requires N+1 points
-        x = self.center.x + rad*np.cos(t) 
-        y = self.center.y + rad*np.sin(t)
+        x = self.transform.get_translate_x() + rad*np.cos(t) 
+        y = self.transform.get_translate_y() + rad*np.sin(t)
         return shapely.Polygon(list(zip(x,y)))
     
 class GeomSymbolRectangle(GeomSymbol):
-    def __init__(self, origin: Coordinate2, width: float, height: float, centered=False,transform: GeomSymbolTransform=None):
+    def __init__(self, width: float, height: float, centered=False,transform: GeomSymbolTransform=None):
         """
         Rectangle with width and height. By default, origin is bottom left corner. 
         If centered==True, origin is in the center.
@@ -535,8 +578,6 @@ class GeomSymbolRectangle(GeomSymbol):
         self.height = height
         self.centered = centered
         self.transform = transform or GeomSymbolTransform()
-        self.transform.translate_x += origin.x
-        self.transform.translate_y += origin.y
     
     def _get_vertices(self):
         if self.centered:
@@ -641,7 +682,7 @@ def get_polygon_rounded_corner(pos: Coordinate2, corner: GeomCorner, radius: flo
     return list(zip(x,y))
 
 class GeomSymbolRoundedRectangle(GeomSymbol):
-    def __init__(self,origin: Coordinate2, width: float, height: float, corner_radius: float, 
+    def __init__(self,width: float, height: float, corner_radius: float, 
                  corners: list[GeomCorner]=None, centered=False,transform: GeomSymbolTransform=None):
         """
         Rectangle with rounded corners. By default, origin is bottom left corner. 
@@ -656,9 +697,6 @@ class GeomSymbolRoundedRectangle(GeomSymbol):
         self.corner_radius = corner_radius
         self.corners = corners or [GeomCorner.BOTTOMLEFT,GeomCorner.BOTTOMRIGHT,GeomCorner.TOPRIGHT,GeomCorner.TOPLEFT]
         self.transform = transform or GeomSymbolTransform()
-        self.transform.translate_x += origin.x
-        self.transform.translate_y += origin.y
-        
         
         smallest_dim = self.width 
         if self.height < self.width:
@@ -853,59 +891,47 @@ class GeomPolygon:
             holes_ls.append(hole.to_shapely())
         return shapely.Polygon(shell_ls,holes_ls)
 
+pad_transform_lookup = {
+    odb.ODBFeaturePadOrientation.DEG0_NOMIRROR      :GeomSymbolTransform(),
+    odb.ODBFeaturePadOrientation.DEG90_NOMIRROR     :GeomSymbolTransform(rot_deg=90),
+    odb.ODBFeaturePadOrientation.DEG180_NOMIRROR    :GeomSymbolTransform(rot_deg=180),
+    odb.ODBFeaturePadOrientation.DEG270_NOMIRROR    :GeomSymbolTransform(rot_deg=270),
+    odb.ODBFeaturePadOrientation.DEG0_XMIRROR       :GeomSymbolTransform(rot_deg=0,mirror_x=True),
+    odb.ODBFeaturePadOrientation.DEG90_XMIRROR      :GeomSymbolTransform(rot_deg=90,mirror_x=True),
+    odb.ODBFeaturePadOrientation.DEG180_XMIRROR     :GeomSymbolTransform(rot_deg=180,mirror_x=True),
+    odb.ODBFeaturePadOrientation.DEG270_XMIRROR     :GeomSymbolTransform(rot_deg=270,mirror_x=True),
+    odb.ODBFeaturePadOrientation.DEGANY_NOMIRROR    :GeomSymbolTransform(),
+    odb.ODBFeaturePadOrientation.DEGANY_XMIRROR     :GeomSymbolTransform(mirror_x=True)
+    }
 def get_pad_transform(pad: odb.ODBFeaturePad):
-    dl = {
-        odb.ODBFeaturePadOrientation.DEG0_NOMIRROR      :GeomSymbolTransform(),
-        odb.ODBFeaturePadOrientation.DEG90_NOMIRROR     :GeomSymbolTransform(rot_deg=90),
-        odb.ODBFeaturePadOrientation.DEG180_NOMIRROR    :GeomSymbolTransform(rot_deg=180),
-        odb.ODBFeaturePadOrientation.DEG270_NOMIRROR    :GeomSymbolTransform(rot_deg=270),
-        odb.ODBFeaturePadOrientation.DEG0_XMIRROR       :GeomSymbolTransform(rot_deg=0,mirror_x=True),
-        odb.ODBFeaturePadOrientation.DEG90_XMIRROR      :GeomSymbolTransform(rot_deg=90,mirror_x=True),
-        odb.ODBFeaturePadOrientation.DEG180_XMIRROR     :GeomSymbolTransform(rot_deg=180,mirror_x=True),
-        odb.ODBFeaturePadOrientation.DEG270_XMIRROR     :GeomSymbolTransform(rot_deg=270,mirror_x=True),
-        odb.ODBFeaturePadOrientation.DEGANY_NOMIRROR    :GeomSymbolTransform(rot_deg=pad.rot_deg),
-        odb.ODBFeaturePadOrientation.DEGANY_XMIRROR     :GeomSymbolTransform(rot_deg=pad.rot_deg,mirror_x=True)
-        }
-    # translate_x=pad.p1.x,translate_y=pad.p1.y
-    transform = dl[pad.orient_def]  # initialize, then update
-    transform.scale = pad.resize_factor
+    """Get pad transform WITHOUT translation"""
+    transform = pad_transform_lookup[pad.orient_def].copy()  # initialize, then update
+    if pad.rot_deg is not None:
+        tf2 = GeomSymbolTransform(scale=pad.resize_factor,rot_deg=pad.rot_deg,translate_x=pad.p1.x,translate_y=pad.p1.y)
+    else:
+        tf2 = GeomSymbolTransform(scale=pad.resize_factor,translate_x=pad.p1.x,translate_y=pad.p1.y)
+    transform.cascade(tf2)
     return transform
     
 
-def parse_symbol(pad: odb.ODBFeaturePad, symbol: odb.ODBSymbol):
-    pos = pad.p1
-    xf = get_pad_transform(pad)
-    if isinstance(symbol,odb.ODBRoundSymbol):
-        symgeom = GeomSymbolRound(pos,symbol.diameter*1e-3,transform=xf)
-    elif isinstance(symbol,odb.ODBRectangleSymbol):
-        symgeom = GeomSymbolRectangle(pos, symbol.width*1e-3, symbol.height*1e-3,
-                                      centered=True,transform=xf)
-    elif isinstance(symbol,odb.ODBSquareSymbol):
-        symgeom = GeomSymbolRectangle(pos, symbol.side*1e-3, symbol.side*1e-3,
-                                      centered=True,transform=xf)
-    elif isinstance(symbol,odb.ODBRoundedRectangleSymbol):
-        symgeom = GeomSymbolRoundedRectangle(pos, symbol.width*1e-3, symbol.height*1e-3, 
-                                             symbol.radius*1e-3,centered=True,transform=xf)
-    elif isinstance(symbol,odb.ODBOvalSymbol):
-        crad = symbol.width/2
-        if symbol.width > symbol.height:
-            crad = symbol.height/2
-        symgeom = GeomSymbolRoundedRectangle(pos, symbol.width*1e-3, symbol.height*1e-3,
-                                             crad*1e-3,centered=True,transform=xf)
-    elif isinstance(symbol,odb.ODBHalfOvalSymbol):
-        crad = symbol.width/2
-        if symbol.width > symbol.height:
-            crad = symbol.height/2
-        corners = [GeomCorner.BOTTOMRIGHT,GeomCorner.TOPRIGHT]
-        symgeom = GeomSymbolRoundedRectangle(pos, symbol.width*1e-3, symbol.height*1e-3,
-                                             crad*1e-3,corners,centered=True,transform=xf)
-    elif isinstance(symbol,odb.ODBUserSymbol):
+def parse_symbol(pad: odb.ODBFeaturePad, symbol: odb.ODBSymbol, scale=1e-3):
+    def _parse_user_symbol(usersympad: odb.ODBFeaturePad,usersym: odb.ODBSymbol):
+        """
+        Parse a user symbol into Geom types.
+        
+        User symbols are defined by their own `feature` files with features centered at
+        the origin. We will convert these to a list of polygons and translate them to our
+        user-symbol-based pad position
+        
+        Always returns a list of Geom types. 
+        """
+        xf = get_pad_transform(usersympad)
         symbol_polygons = []
         surface_polygons = []
-        for feat in symbol.featfile.features_list:
+        for feat in usersym.featfile.features_list:
             if isinstance(feat,odb.ODBFeaturePad):
-                symbol = symbol.featfile.symbol_dict[feat.sym_num]
-                symbol_geom = parse_symbol(feat,symbol)
+                symbol_geom = parse_symbol(feat,usersym.featfile.symbol_dict[feat.sym_num])
+                symbol_geom.transform.cascade(xf)
                 symbol_polygons.append(symbol_geom)
             elif isinstance(feat,odb.ODBFeatureSurface):
                 shell_poly = None
@@ -915,10 +941,13 @@ def parse_symbol(pad: odb.ODBFeaturePad, symbol: odb.ODBSymbol):
                         if shell_poly is not None:
                             print("WARNING: More than one island for surface!")
                         shell_poly = GeomSimplePolygon.from_odb_polygon(poly)
-                        # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
+                        # Update polygon transform
+                        shell_poly.transform.cascade(xf)
                     else:
-                        hole_polys.append(GeomSimplePolygon.from_odb_polygon(poly))
-                        # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
+                        hole_poly = GeomSimplePolygon.from_odb_polygon(poly)
+                        # Update polygon transform
+                        hole_poly.transform.cascade(xf)
+                        hole_polys.append(hole_poly)
                         
                 surface_polygons.append(GeomPolygon(shell_poly,hole_polys))
             else:
@@ -928,17 +957,131 @@ def parse_symbol(pad: odb.ODBFeaturePad, symbol: odb.ODBSymbol):
         elif len(surface_polygons) == 0 and len(symbol_polygons) == 1:
             symgeom = symbol_polygons[0]
         else:
-            print("Warning: Symbol with multiple features")
-            print(surface_polygons+symbol_polygons)
+            # print("Warning: Symbol with multiple features")
+            # print(surface_polygons+symbol_polygons)
             return surface_polygons+symbol_polygons
+        return [symgeom]
+    
+    xf = get_pad_transform(pad)  # rotate, scale, translation
+    if isinstance(symbol,odb.ODBRoundSymbol):
+        symgeom = GeomSymbolRound(symbol.diameter*scale,transform=xf.copy())
+    elif isinstance(symbol,odb.ODBRectangleSymbol):
+        symgeom = GeomSymbolRectangle(symbol.width*scale, symbol.height*scale,
+                                      centered=True,transform=xf.copy())
+    elif isinstance(symbol,odb.ODBSquareSymbol):
+        symgeom = GeomSymbolRectangle(symbol.side*scale, symbol.side*scale,
+                                      centered=True,transform=xf.copy())
+    elif isinstance(symbol,odb.ODBRoundedRectangleSymbol):
+        symgeom = GeomSymbolRoundedRectangle(symbol.width*scale, symbol.height*scale, 
+                                             symbol.radius*scale,centered=True,transform=xf.copy())
+    elif isinstance(symbol,odb.ODBOvalSymbol):
+        crad = symbol.width/2
+        if symbol.width > symbol.height:
+            crad = symbol.height/2
+        symgeom = GeomSymbolRoundedRectangle(symbol.width*scale, symbol.height*scale,
+                                             crad*scale,centered=True,transform=xf.copy())
+    elif isinstance(symbol,odb.ODBHalfOvalSymbol):
+        crad = symbol.width/2
+        if symbol.width > symbol.height:
+            crad = symbol.height/2
+        corners = [GeomCorner.BOTTOMRIGHT,GeomCorner.TOPRIGHT]
+        symgeom = GeomSymbolRoundedRectangle(symbol.width*scale, symbol.height*scale,
+                                             crad*scale,corners,centered=True,transform=xf.copy())
+    elif isinstance(symbol,odb.ODBUserSymbol):
+        symgeoms = _parse_user_symbol(pad, symbol)
+        return symgeoms
 
     else:
         raise NotImplementedError(f"Symbol {symbol} not yet implemented.")
     return symgeom
 
+def parse_layer_geom(layer: odb.ODBLayer, user_sym_dict, edadata):
+    # break layer graph up on a per-symbol basis
+    layer_symbol_subgraphs = layer.get_partitioned_graph(user_sym_dict,edadata.feature_netnames)
+    # layer_symbol_subgraphs is a dict from symbol number -> list of subgraphs for that symbol
+
+    # make subtraces
+    subtraces = {}
+
+    for symnum, sgs in layer_symbol_subgraphs.items():
+        for sg in sgs:
+            netname = sg.graph['netname']
+            if netname not in subtraces.keys():
+                subtraces[netname] = []
+            subtraces[netname].append(GeomSubtrace.from_graph(sg))
+
+    # Union and plot subtraces with Shapely
+    all_net_polygons = []
+    symbol_polygons = []
+    surface_polygons = []
+    for netnmame,netsubs in subtraces.items():
+        for subtrace in netsubs:
+            all_net_polygons.append(subtrace)
+
+    # Parse pads and surfaces
+    for feat in layer.featfile.features_list:
+        if isinstance(feat,odb.ODBFeaturePad):
+            symbol = layer.featfile.symbol_dict[feat.sym_num]
+            symbol_geom = parse_symbol(feat,symbol)
+            if isinstance(symbol_geom,list):    
+                symbol_polygons += symbol_geom
+            else:
+                symbol_polygons.append(symbol_geom)
+        elif isinstance(feat,odb.ODBFeatureSurface):
+            shell_poly = None
+            hole_polys = []
+            for poly in feat.polygons:
+                if poly.poly_type == odb.ODBPolygonType.ISLAND:
+                    if shell_poly is not None:
+                        print("WARNING: More than one island for surface!")
+                    shell_poly = GeomSimplePolygon.from_odb_polygon(poly)
+                    # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
+                else:
+                    hole_polys.append(GeomSimplePolygon.from_odb_polygon(poly))
+                    # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
+                    
+            surface_polygons.append(GeomPolygon(shell_poly,hole_polys))
+
+    return all_net_polygons+symbol_polygons+surface_polygons
 
 
-
-
-
+def plot_shapely_as_patch(polygon,ax=None,**patchkwargs):
+    if ax is None:
+        fig,ax = plt.subplots(1,1,figsize=(7,7))
+        ax.set_aspect('equal')
+        ax.set_box_aspect(1)
+    if polygon.geom_type == 'Polygon':
+        vtxs = []
+        cmds = []
+        xx,yy = polygon.exterior.coords.xy
+        x = xx.tolist()
+        y = yy.tolist()
+        shell_vtxs = list(zip(x,y))
+        shell_cmds = [mpl.path.Path.MOVETO]+[mpl.path.Path.LINETO]*(len(shell_vtxs)-1)
+        shell_vtxs += [(0,0)]
+        shell_cmds += [mpl.path.Path.CLOSEPOLY]
+        vtxs = shell_vtxs
+        cmds = shell_cmds
+        
+        for polyint in polygon.interiors:
+            xx,yy = polyint.coords.xy
+            x = xx.tolist()
+            y = yy.tolist()
+            hole_vtxs = list(zip(x,y))
+            hole_cmds = [mpl.path.Path.MOVETO]+[mpl.path.Path.LINETO]*(len(hole_vtxs)-1)
+            hole_vtxs += [(0,0)]
+            hole_cmds += [mpl.path.Path.CLOSEPOLY]
+            
+            vtxs += hole_vtxs 
+            cmds += hole_cmds
+        path = mpl.path.Path(vtxs,cmds)
+        patch = mpl.patches.PathPatch(path,**patchkwargs)
+        ax.add_patch(patch)
+        ax.autoscale()
+    elif polygon.geom_type == 'LineString':
+        xx,yy = polygon.coords.xy
+        x = xx.tolist()
+        y = yy.tolist()
+        ax.plot(x,y)
+        
 
