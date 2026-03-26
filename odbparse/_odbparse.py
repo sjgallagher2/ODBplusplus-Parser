@@ -10,23 +10,13 @@ from enum import Enum,auto
 from dataclasses import dataclass,field
 import re
 from typing import Optional
-import numpy as np
+from numpy import deg2rad,cos,sin,pi,tan
 import networkx as nx  # graph library for mapping nets to lines
-
-# For testing only
 import matplotlib as mpl
-import matplotlib.pyplot as plt
-# from shapely import LineString
 
 # Module
-from coordinate2 import Coordinate2
-from pcb_geom import circular_arc_to_path
+from ._coordinate2 import Coordinate2
 
-# os.path https://docs.python.org/3/library/os.path.html
-#  isdir()
-#  isfile()
-#  exists()
-# pathlib https://docs.python.org/3/library/pathlib.html
 
 # DEFINITIONS
 def enum_contains(eclass: Enum,name: str):
@@ -36,6 +26,82 @@ def enum_contains(eclass: Enum,name: str):
     except KeyError:
         return False
 
+def circular_arc_to_path(center: Coordinate2, radius: float, angle_start_deg: float, angle_end_deg: float, cw: bool, standalone=False):
+    """
+    Outline generated from AI which cites https://github.com/fontello/svgpath
+    
+    Approximates a circular arc with a sequence of cubic Bezier curves.
+    For simplicity, this function assumes the arc is less than 90 degrees.
+    For larger arcs, it should be subdivided first.
+    
+    angles are in degrees, orientation defined by `cw` (clockwise)
+    assumes first point has already been added to path, unless standalone==True
+    in which case a MOVETO is prepended to the output
+    
+    Returns (vtxs,codes)
+        vtxs  List of 2-tuples with xy coordinates, for use with mpl.path.Path
+        codes List of mpl.path.Path codes for the spline. 
+    """
+    mpl_MOVETO = 1  # definitions from matplotlib
+    mpl_CURVE4 = 4  # may be subject to change?
+    
+    do_flip = False
+    if cw:
+        angle_start = deg2rad(angle_end_deg)
+        angle_end = deg2rad(angle_start_deg)
+        do_flip = True
+    else:
+        angle_start = deg2rad(angle_start_deg)
+        angle_end = deg2rad(angle_end_deg)
+    
+    
+    # Calculate start and end points
+    p0_x = center.x + radius * cos(angle_start)
+    p0_y = center.y + radius * sin(angle_start)
+    p3_x = center.x + radius * cos(angle_end)
+    p3_y = center.y + radius * sin(angle_end)
+    P0 = (p0_x, p0_y)
+    P3 = (p3_x, p3_y)
+
+    # Calculate angular span (ensure it's positive and < 90 deg for best results)
+    angle_span = angle_end - angle_start
+    if angle_span < 0:
+        angle_span += 2 * pi # Handle cases where end < start
+
+    # It's highly recommended to subdivide large angles into smaller ones (e.g., <= 90 deg)
+    if angle_span > pi / 2 + 1e-5:
+        # Handle subdivision in a more complete function (see online resources)
+        # print("Warning: Angle span > 90 degrees. Approximation error will be larger.")
+        # For a full implementation of arbitrary angles, refer to libraries 
+        # or detailed algorithms on [GitHub](https://github.com/fontello/svgpath)
+        pass 
+
+    # Calculate the 'L' value
+    L = (4/3) * radius * tan(angle_span / 4)
+
+    # Calculate unit tangent vectors at P0 and P3
+    # Tangent at angle t is (-sin(t), cos(t)) for ccw
+    T0 = (-sin(angle_start), cos(angle_start))
+    T3 = (-sin(angle_end), cos(angle_end)) # Tangent vector at P3 needs to point inward for the 'minus L*T1' formula
+
+    # Calculate control points P1 and P2
+    P1 = (P0[0] + L * T0[0], P0[1] + L * T0[1])
+    P2 = (P3[0] - L * T3[0], P3[1] - L * T3[1]) # Note the minus sign for T3
+
+    if do_flip:
+        vtxs = [P0, P1, P2]
+    else:
+        vtxs = [P1,P2,P3]
+    codes = [mpl_CURVE4]*3
+    
+    if standalone:
+        vtxs = [P0] + vtxs
+        codes = [mpl_MOVETO] + codes
+    
+    if do_flip:
+        vtxs = vtxs[::-1]
+    
+    return vtxs,codes
         
 class ODBLayerMatrixContext(Enum):
     BOARD = auto()
@@ -1298,7 +1364,6 @@ class ODBPolygon:
         # Curves are given by center, start, and end. 
         MOVETO = mpl.path.Path.MOVETO
         LINETO = mpl.path.Path.LINETO
-        CURVE4 = mpl.path.Path.CURVE4
         
         x0 = pos_offset
         
@@ -1642,7 +1707,7 @@ class ODBFeatureFile:
         # surf_beg_idxs = []
         # surf_end_idxs = []
         surf_beg_idx = -1
-        feat_num = 1
+        feat_num = 0  # 0 or 1 indexed??
         
         for i,line in enumerate(lines):
             # 1. Read features - Symbols Table
@@ -1794,7 +1859,7 @@ def partition_non_branching(graph: nx.Graph):
         # To walk the graph, start with a leaf, find its neighbor, find neighbor's neighbors
         # that aren't the leaf, keep going until we get >1 neighbors, excluding
         # previously used edges
-        path = [start, neighbor]
+        path = [(start, neighbor)]
         take_edge(start, neighbor)
 
         prev, curr = start, neighbor
@@ -1808,7 +1873,7 @@ def partition_non_branching(graph: nx.Graph):
                 break
 
             _, nxt = next_edges[0]
-            path.append(nxt)
+            path.append(next_edges[0])
             take_edge(curr, nxt)
 
             prev, curr = curr, nxt
@@ -1821,13 +1886,13 @@ def partition_non_branching(graph: nx.Graph):
             for neighbor in list(graph.neighbors(node)):
                 if (node, neighbor) in unused_edges or (neighbor, node) in unused_edges:
                     path = walk_path(node, neighbor)
-                    subgraphs.append(graph.subgraph(path).copy())
+                    subgraphs.append(graph.edge_subgraph(path).copy())
 
     # 2. Handle remaining edges (cycles)
     while unused_edges:
         u, v = next(iter(unused_edges))
         cycle = walk_path(u, v)
-        subgraphs.append(graph.subgraph(cycle).copy())
+        subgraphs.append(graph.edge_subgraph(cycle).copy())
         
     return subgraphs
 
@@ -2001,7 +2066,10 @@ class ODBLayer:
                     # Only need first feature
                     fnum = list(sg.edges(data=True))[0][2]['fnum']
                     feat_net_lookup = feature_netnames[self.name]
-                    sg.graph['netname'] = feat_net_lookup.get(fnum)
+                    netname = feat_net_lookup.get(fnum)
+                    if netname is None:
+                        netname = '$NONE$'
+                    sg.graph['netname'] = netname
             
         return layer_symbol_subgraphs
 
@@ -2117,7 +2185,7 @@ class ODB_EDA_SubnetRecord(ODB_EDA_Record):
                 self.plane_fill_size = m.group("fill_size")
             else:
                 raise ValueError(f"Could not match line of record type SNT PLN with text {line}")
-        
+
         
 class ODB_EDA_PackageRecord(ODB_EDA_Record):
     def __init__(self,line: list[str]):
@@ -2326,88 +2394,19 @@ class ODB_EDA_Package:
         return f'ODB_EDA_Package(record={self.record},outline_record={self.outline_record},property_recs={self.property_recs},pins={self.pins})'
 
 
-"""
-A _subnet_ is a single, continuous trace (which may be branching), defined in e.g. ODB++ 
-and IPC2581 by its line and arc segments and a symbol which defines the "paintbrush"
-(width, join style, and cap style).
-
-For CAD representation, we want to convert this to a set of polylines, each with their
-own linewidth for all elements in that polyline. Optionally, we can further decompose 
-the original subnet trace into non-branching polylines. In the end, all polylines are 
-unioned and offset (i.e. buffered, given thickness), or offset and then unioned, into 
-a final shape.
-
-We will define a _geomsubtrace_ as a single polyline with a single tracewidth, join style,
-and cap style, and a _geomtrace_ as a collection of geometric subtraces.
-"""
-
-class SVGJoinStyle:
-    MITER = auto()
-    ROUND = auto()
-    BEVEL = auto()
-
-class SVGCapStyle:
-    BUTT = auto()
-    SQUARE = auto()
-    ROUND = auto()
-    
-
-# @dataclass
-# class GeomSubtrace:
-#     """    
-#     """
-#     vertices: list[Coordinate2]
-#     tracewidth: float
-#     join_style: SVGJoinStyle = SVGJoinStyle.ROUND
-#     cap_style: SVGCapStyle = SVGCapStyle.ROUND
-    
-#     @classmethod
-#     def from_segments_symbols(cls,segments: list[ODBFeatureLine|ODBFeatureArc],symbol: ODBSymbol):
-#         # Parse symbol
-#         if isinstance(symbol,ODBRoundSymbol):
-#             join_style = SVGJoinStyle.ROUND 
-#             cap_style = SVGCapStyle.ROUND
-#             tracewidth = symbol.diameter
-#         elif isinstance(symbol,ODBSquareSymbol):
-#             join_style = SVGJoinStyle.MITER
-#             cap_style = SVGCapStyle.SQUARE  # not BUTT assuming symbol is centered on vertices
-#             tracewidth = symbol.side
-#         else:
-#             # Asymmetric symbols like rectangles can only be horizontal or vertical, which
-#             # unnecessarily constrains polylines, and seems stupid. If this becomes an issue,
-#             # I will reconsider
-#             raise NotImplementedError(f"Segments with symbol {symbol} are not implemented. Defaulting to ROUND cap with ROUND join.")
-        
-#         # Parse segments into a graph
-#         graph = nx.Graph()
-#         for feat in segments:
-#             # both Line and Arc has pt_s and pt_e
-#             graph.add_edge(feat.pt_s,feat.pt_e)
-        
-#         # Get segment vertices in order
-#         leaf_nodes = [n for n,deg in graph.degree() if deg == 1]
-#         if len(leaf_nodes) > 2:
-#             raise ValueError("GeomSubtrace cannot be branching or disjoint.")
-#         vtx_path = nx.shortest_path(graph,source=leaf_nodes[0],target=leaf_nodes[1])
-        
-#         # Return
-#         return cls(vtx_path,tracewidth,join_style,cap_style)
-        
-
-# class GeomTrace:
-#     """
-#     """
-#     pass
-
-
-
 class ODB_EDA_Subnet:
     def __init__(self,subnet_record: ODB_EDA_SubnetRecord,feature_ids: list[ODB_EDA_FeatureIDRecord]):
         self.record = subnet_record 
-        self.feature_ids = feature_ids
+        self.fid_records = feature_ids
+        self.layer_name = ''
+        if len(self.fid_records) > 0:
+            self.layer_name = self.fid_records[0].layer_name
+        self.feat_nums = []
+        for fid in self.fid_records:
+            self.feat_nums.append(fid.feature_number)
     
     def __repr__(self):
-        return f'ODB_EDA_Subnet(record={self.record},feature_ids={self.feature_ids})'
+        return f'ODB_EDA_Subnet(record={self.record},feature_ids={self.fid_records})'
 
 class ODB_EDA_Net:
     def __init__(self,net_record: ODB_EDA_NetRecord,
@@ -2602,15 +2601,41 @@ class ODB_EDA_Data:
                     raise ValueError(f"Parse failed, pin overlaps with another pin? Record #{i}.")
                 active_pin = i 
         
-        print("Loading netname lookup...")
-        self.feature_netnames = {}    # layer num : dict[feature number : netname]
+        print("Loading feature lookup...")
+        self.feat_netname_on_layer = {}         # layer name : dict[feature number : netname]
+        # self.subnet_of_featnum_on_layer = {}    # layer name : dict[feature number : subnet]
+        self.fid_rec_of_featnum_on_layer = {}   # layer name : dict[feature number : FID record]
         for netname,net in self.nets.items():
             for sn in net.subnets:
-                for fid in sn.feature_ids:
-                    if fid.layer_name not in self.feature_netnames.keys():
-                        self.feature_netnames[fid.layer_name] = {}
-                    self.feature_netnames[fid.layer_name][fid.feature_number] = netname
+                for fid in sn.fid_records:
+                    # Make sure dictionaries are populated
+                    if fid.layer_name not in self.feat_netname_on_layer.keys():
+                        self.feat_netname_on_layer[fid.layer_name] = {}
+                    # if fid.layer_name not in self.subnet_of_featnum_on_layer.keys():
+                    #     self.subnet_of_featnum_on_layer[fid.layer_name] = {}
+                    if fid.layer_name not in self.fid_rec_of_featnum_on_layer.keys():
+                        self.fid_rec_of_featnum_on_layer[fid.layer_name] = {}
+                    # Add to dictionaries
+                    self.feat_netname_on_layer[fid.layer_name][fid.feature_number] = netname
+                    # self.subnet_of_featnum_on_layer[fid.layer_name][fid.feature_number] = sn
+                    self.fid_rec_of_featnum_on_layer[fid.layer_name][fid.feature_number] = fid
+        
         print("Done.")
+    
+    def get_feature_FID(self,layer_name, feat_num):
+        if layer_name in self.fid_rec_of_featnum_on_layer.keys():
+            return self.fid_rec_of_featnum_on_layer[layer_name].get(feat_num)
+        return None
+    def get_feature_subnet(self,layer_name,feat_num):
+        if layer_name in self.feat_netname_on_layer.keys():
+            netname = self.feat_netname_on_layer[layer_name].get(feat_num)
+            if netname is None:
+                return None
+            subnets = self.nets[netname].subnets
+            subnets = [sn for sn in subnets if feat_num in sn.feat_nums]
+            return subnets
+        return None
+        
 
 @dataclass 
 class ODBNetPoint:
@@ -2621,6 +2646,9 @@ class ODBNetPoint:
     netname: str
 
 class ODBNetlistFile:
+    """
+    Represents a cadnet netlist file
+    """
     def __init__(self,fpath: Path):
         """
         Note: "staggered" = points that were staggered by an algorithm to make them accessible to test probes

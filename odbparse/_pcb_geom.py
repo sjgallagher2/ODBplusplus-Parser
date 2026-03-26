@@ -5,22 +5,28 @@ Created on Fri Mar  6 15:03:46 2026
 @author: SG1295
 """
 # std lib
-from typing import List
-import math
-from math import pow,fabs,sin,cos,tan
+from math import sin,cos,tan
 from enum import Enum,auto
 from dataclasses import dataclass,field
+from pathlib import Path
+
 # dependencies
 import numpy as np
-from numpy import around
 import networkx as nx
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import shapely
 from shapely import LineString  # library for performing boolean operations and buffering/offsetting traces
+import cadquery as cq
 
 # Module
-from coordinate2 import Coordinate2
+from ._coordinate2 import Coordinate2
+# features
+from ._odbparse import ODBPolygonType,ODBPolygon,ODBFeatureSurface,ODBFeatureLine,ODBFeatureArc,ODBPolyCurve,ODBFeaturePadOrientation,ODBFeaturePad
+# symbols
+from ._odbparse import ODBSymbol,ODBRoundSymbol,ODBSquareSymbol,ODBRectangleSymbol,ODBRoundedRectangleSymbol,ODBOvalSymbol,ODBHalfOvalSymbol,ODBUserSymbol
+# higher level
+from ._odbparse import ODBLayer,SIMULATION_LAYER_TYPES,load_ODB,load_user_symbols,ODB_EDA_Data
 
 pi = 3.14159265358979
 
@@ -105,10 +111,6 @@ def circular_arc_to_path(center: Coordinate2, radius: float, angle_start_deg: fl
     
     return vtxs,codes
 
-
-
-import odbparse as odb
-
 class GeomSubtraceArcOrientation(Enum):
     CW = auto()
     CCW = auto()
@@ -121,20 +123,14 @@ class GeomCommandStart(GeomCommand):
     pt: Coordinate2
     
     def to_mpl_path(self):
-        mpl_MOVETO = 1  # definitions from matplotlib
-        mpl_LINETO = 2
-        mpl_CURVE4 = 4
-        return [(self.pt.x,self.pt.y)],[mpl_MOVETO]
+        return [(self.pt.x,self.pt.y)],[mpl.path.Path.MOVETO]
 
 @dataclass
 class GeomCommandLineTo(GeomCommand):
     pt: Coordinate2 
     
     def to_mpl_path(self):
-        mpl_MOVETO = 1  # definitions from matplotlib
-        mpl_LINETO = 2
-        mpl_CURVE4 = 4
-        return [(self.pt.x,self.pt.y)],[mpl_LINETO]
+        return [(self.pt.x,self.pt.y)],[mpl.path.Path.LINETO]
 
 @dataclass
 class GeomCommandArcTo(GeomCommand):
@@ -310,7 +306,7 @@ class GeomSubtrace:
             return ls
     
     @classmethod
-    def from_segments_and_symbol(cls,segments: list[odb.ODBFeatureLine|odb.ODBFeatureArc],symbol: odb.ODBSymbol,netname: str):
+    def from_segments_and_symbol(cls,segments: list[ODBFeatureLine|ODBFeatureArc],symbol: ODBSymbol,netname: str):
         """
         Convert segments and a symbol into a subtrace.
         
@@ -321,11 +317,11 @@ class GeomSubtrace:
         So we have to make our own path and do a lot of checking. It's ugly but it works. 
         """
         # Parse symbol
-        if isinstance(symbol,odb.ODBRoundSymbol):
+        if isinstance(symbol,ODBRoundSymbol):
             join_style = SVGJoinStyle.ROUND 
             cap_style = SVGCapStyle.ROUND
             tracewidth = symbol.diameter
-        elif isinstance(symbol,odb.ODBSquareSymbol):
+        elif isinstance(symbol,ODBSquareSymbol):
             join_style = SVGJoinStyle.MITER
             cap_style = SVGCapStyle.SQUARE  # not BUTT assuming symbol is centered on vertices
             tracewidth = symbol.side
@@ -352,6 +348,7 @@ class GeomSubtrace:
                     graph.remove_edge(u,v)
         branch_nodes = [n for n,deg in graph.degree() if deg > 2]
         if len(branch_nodes) > 0:
+            # Try splitting into cycles
             raise ValueError(f"GeomSubtrace cannot be branching. Net name: {netname}, Graph nodes: {graph.nodes}")
         
         # Get segment vertices in order
@@ -373,10 +370,10 @@ class GeomSubtrace:
         cmds = [GeomCommandStart(vtx_path[0])]  # Initialize with start point
         for edge in path_edges:
             feat = graph.get_edge_data(edge[0],edge[1])['feature']
-            if isinstance(feat,odb.ODBFeatureLine):
+            if isinstance(feat,ODBFeatureLine):
                 # Note: Do NOT use feature here! They can be flipped
                 cmds.append(GeomCommandLineTo(edge[1]))
-            elif isinstance(feat,odb.ODBFeatureArc):
+            elif isinstance(feat,ODBFeatureArc):
                 cw = feat.cw
                 if feat.pt_e != edge[1]:
                     cw = not cw  # Feature was backwards, flip cw/ccw
@@ -393,11 +390,11 @@ class GeomSubtrace:
         netname = graph.graph['netname']
         symbol = graph.graph['symbol']
         # Parse symbol
-        if isinstance(symbol,odb.ODBRoundSymbol):
+        if isinstance(symbol,ODBRoundSymbol):
             join_style = SVGJoinStyle.ROUND 
             cap_style = SVGCapStyle.ROUND
             tracewidth = symbol.diameter
-        elif isinstance(symbol,odb.ODBSquareSymbol):
+        elif isinstance(symbol,ODBSquareSymbol):
             join_style = SVGJoinStyle.MITER
             cap_style = SVGCapStyle.SQUARE  # not BUTT assuming symbol is centered on vertices
             tracewidth = symbol.side
@@ -415,6 +412,10 @@ class GeomSubtrace:
                     graph.remove_edge(u,v)
         branch_nodes = [n for n,deg in graph.degree() if deg > 2]
         if len(branch_nodes) > 0:
+            # Try splitting into cycles
+            print("Here")
+        branch_nodes = [n for n,deg in graph.degree() if deg > 2]
+        if len(branch_nodes) > 0:
             raise ValueError(f"GeomSubtrace cannot be branching. Net name: {netname}, Graph nodes: {graph.nodes}")
         
         # Get segment vertices in order
@@ -436,10 +437,10 @@ class GeomSubtrace:
         cmds = [GeomCommandStart(vtx_path[0])]  # Initialize with start point
         for edge in path_edges:
             feat = graph.get_edge_data(edge[0],edge[1])['feature']
-            if isinstance(feat,odb.ODBFeatureLine):
+            if isinstance(feat,ODBFeatureLine):
                 # Note: Do NOT use feature here! They can be flipped apparently??
                 cmds.append(GeomCommandLineTo(edge[1]))
-            elif isinstance(feat,odb.ODBFeatureArc):
+            elif isinstance(feat,ODBFeatureArc):
                 cw = feat.cw
                 if feat.pt_e != edge[1]:
                     cw = not cw  # Feature was backwards, flip cw/ccw
@@ -454,8 +455,8 @@ class GeomSubtrace:
 
 # Base class for symbol geometries
 class GeomSymbol:
-    def __init__(self):
-        pass
+    def __init__(self,netname):
+        self.netname = netname or '$NONE$'
     def to_mpl(self):
         pass
     def to_shapely(self):
@@ -482,7 +483,7 @@ class GeomSymbolTransform:
     def __init__(self, 
                  scale: float = 1.0,
                  rot_deg: float = 0.0,
-                 cw: bool = False,
+                 cw: bool = True,
                  translate_x: float = 0.0,
                  translate_y: float = 0.0,
                  mirror_x: bool = False):
@@ -544,8 +545,8 @@ class GeomSymbolTransform:
         return f"GeomSymbolTransform(matrix={self.matrix})"
 
 class GeomSymbolRound(GeomSymbol):
-    def __init__(self, diameter: float,transform: GeomSymbolTransform=None):
-        super().__init__()
+    def __init__(self, diameter: float, netname: str, transform: GeomSymbolTransform=None):
+        super().__init__(netname)
         self.diameter = diameter
         self.transform = transform or GeomSymbolTransform()
         
@@ -568,12 +569,12 @@ class GeomSymbolRound(GeomSymbol):
         return shapely.Polygon(list(zip(x,y)))
     
 class GeomSymbolRectangle(GeomSymbol):
-    def __init__(self, width: float, height: float, centered=False,transform: GeomSymbolTransform=None):
+    def __init__(self, width: float, height: float, netname: str, centered=False,transform: GeomSymbolTransform=None):
         """
         Rectangle with width and height. By default, origin is bottom left corner. 
         If centered==True, origin is in the center.
         """
-        super().__init__()
+        super().__init__(netname)
         self.width = width
         self.height = height
         self.centered = centered
@@ -682,7 +683,7 @@ def get_polygon_rounded_corner(pos: Coordinate2, corner: GeomCorner, radius: flo
     return list(zip(x,y))
 
 class GeomSymbolRoundedRectangle(GeomSymbol):
-    def __init__(self,width: float, height: float, corner_radius: float, 
+    def __init__(self,width: float, height: float, corner_radius: float, netname: str,
                  corners: list[GeomCorner]=None, centered=False,transform: GeomSymbolTransform=None):
         """
         Rectangle with rounded corners. By default, origin is bottom left corner. 
@@ -690,7 +691,7 @@ class GeomSymbolRoundedRectangle(GeomSymbol):
         If corners==None, all four corners are rounded.
         `corners` has the order [bottom left, bottom right, top right, top left]
         """
-        super().__init__()
+        super().__init__(netname)
         self.centered = centered
         self.width = width
         self.height = height
@@ -814,21 +815,21 @@ class GeomSimplePolygon:
     transform: GeomSymbolTransform = field(default_factory=GeomSymbolTransform)
     
     @classmethod
-    def from_odb_polygon(cls,feat: odb.ODBFeaturePolygon):
+    def from_odb_polygon(cls,feat: ODBPolygon):
         # feat.bs         # start position
         # feat.poly_type  # ODBPolygonType.ISLAND or HOLE
         # feat.segments   # ODBPolyCyrve or a Coordinate2 for a line
         
         cmds = [GeomCommandStart(feat.bs)]
         for seg in feat.segments:
-            if isinstance(seg,odb.ODBPolyCurve):
+            if isinstance(seg,ODBPolyCurve):
                 if seg.cw:
                     cmds.append(GeomCommandArcTo(seg.p2,seg.center,GeomSubtraceArcOrientation.CW))
                 else:
                     cmds.append(GeomCommandArcTo(seg.p2,seg.center,GeomSubtraceArcOrientation.CCW))
             else:
                 cmds.append(GeomCommandLineTo(seg))
-        if feat.poly_type == odb.ODBPolygonType.ISLAND:
+        if feat.poly_type == ODBPolygonType.ISLAND:
             polarity = GeomPolygonPolarity.POSITIVE
         else:
             polarity = GeomPolygonPolarity.NEGATIVE
@@ -847,6 +848,7 @@ class GeomSimplePolygon:
             prev_pt = vtxs[-1]
         
         vtx_tuples = [(c.x,c.y) for c in all_vtxs]
+        vtx_tuples = self.transform.apply(vtx_tuples)
         return vtx_tuples
     
     def to_mpl(self,**patchkwargs) -> mpl.patches.PathPatch:
@@ -861,6 +863,7 @@ class GeomSimplePolygon:
             all_vtxs += vtxs
             all_codes += codes
             prev_pt = vtxs[-1]
+        all_vtxs = self.transform.apply(all_vtxs)
         patch = mpl.patches.PathPatch(mpl.path.Path(all_vtxs,all_codes),**patchkwargs)
         return patch
     
@@ -876,13 +879,15 @@ class GeomSimplePolygon:
             prev_pt = vtxs[-1]
         
         vtx_tuples = [(c.x,c.y) for c in all_vtxs]
+        vtx_tuples = self.transform.apply(vtx_tuples)
         ls = shapely.LineString(vtx_tuples)
         return ls
 
 class GeomPolygon:
-    def __init__(self, shell: GeomSimplePolygon, holes: list[GeomSimplePolygon]):
+    def __init__(self, shell: GeomSimplePolygon, holes: list[GeomSimplePolygon], netname: str):
         self.shell = shell
         self.holes = holes
+        self.netname = netname or '$NONE$'
     
     def to_shapely(self):
         shell_ls = self.shell.to_shapely()
@@ -891,19 +896,20 @@ class GeomPolygon:
             holes_ls.append(hole.to_shapely())
         return shapely.Polygon(shell_ls,holes_ls)
 
+# NOTE: Copy the transform before using it
 pad_transform_lookup = {
-    odb.ODBFeaturePadOrientation.DEG0_NOMIRROR      :GeomSymbolTransform(),
-    odb.ODBFeaturePadOrientation.DEG90_NOMIRROR     :GeomSymbolTransform(rot_deg=90),
-    odb.ODBFeaturePadOrientation.DEG180_NOMIRROR    :GeomSymbolTransform(rot_deg=180),
-    odb.ODBFeaturePadOrientation.DEG270_NOMIRROR    :GeomSymbolTransform(rot_deg=270),
-    odb.ODBFeaturePadOrientation.DEG0_XMIRROR       :GeomSymbolTransform(rot_deg=0,mirror_x=True),
-    odb.ODBFeaturePadOrientation.DEG90_XMIRROR      :GeomSymbolTransform(rot_deg=90,mirror_x=True),
-    odb.ODBFeaturePadOrientation.DEG180_XMIRROR     :GeomSymbolTransform(rot_deg=180,mirror_x=True),
-    odb.ODBFeaturePadOrientation.DEG270_XMIRROR     :GeomSymbolTransform(rot_deg=270,mirror_x=True),
-    odb.ODBFeaturePadOrientation.DEGANY_NOMIRROR    :GeomSymbolTransform(),
-    odb.ODBFeaturePadOrientation.DEGANY_XMIRROR     :GeomSymbolTransform(mirror_x=True)
+    ODBFeaturePadOrientation.DEG0_NOMIRROR      :GeomSymbolTransform(),
+    ODBFeaturePadOrientation.DEG90_NOMIRROR     :GeomSymbolTransform(rot_deg=90),
+    ODBFeaturePadOrientation.DEG180_NOMIRROR    :GeomSymbolTransform(rot_deg=180),
+    ODBFeaturePadOrientation.DEG270_NOMIRROR    :GeomSymbolTransform(rot_deg=270),
+    ODBFeaturePadOrientation.DEG0_XMIRROR       :GeomSymbolTransform(rot_deg=0,mirror_x=True),
+    ODBFeaturePadOrientation.DEG90_XMIRROR      :GeomSymbolTransform(rot_deg=90,mirror_x=True),
+    ODBFeaturePadOrientation.DEG180_XMIRROR     :GeomSymbolTransform(rot_deg=180,mirror_x=True),
+    ODBFeaturePadOrientation.DEG270_XMIRROR     :GeomSymbolTransform(rot_deg=270,mirror_x=True),
+    ODBFeaturePadOrientation.DEGANY_NOMIRROR    :GeomSymbolTransform(),
+    ODBFeaturePadOrientation.DEGANY_XMIRROR     :GeomSymbolTransform(mirror_x=True)
     }
-def get_pad_transform(pad: odb.ODBFeaturePad):
+def get_pad_transform(pad: ODBFeaturePad):
     """Get pad transform WITHOUT translation"""
     transform = pad_transform_lookup[pad.orient_def].copy()  # initialize, then update
     if pad.rot_deg is not None:
@@ -912,10 +918,9 @@ def get_pad_transform(pad: odb.ODBFeaturePad):
         tf2 = GeomSymbolTransform(scale=pad.resize_factor,translate_x=pad.p1.x,translate_y=pad.p1.y)
     transform.cascade(tf2)
     return transform
-    
 
-def parse_symbol(pad: odb.ODBFeaturePad, symbol: odb.ODBSymbol, scale=1e-3):
-    def _parse_user_symbol(usersympad: odb.ODBFeaturePad,usersym: odb.ODBSymbol):
+def parse_symbol(pad: ODBFeaturePad, symbol: ODBSymbol, netname: str, scale=1e-3):
+    def _parse_user_symbol(usersympad: ODBFeaturePad,usersym: ODBSymbol):
         """
         Parse a user symbol into Geom types.
         
@@ -929,15 +934,15 @@ def parse_symbol(pad: odb.ODBFeaturePad, symbol: odb.ODBSymbol, scale=1e-3):
         symbol_polygons = []
         surface_polygons = []
         for feat in usersym.featfile.features_list:
-            if isinstance(feat,odb.ODBFeaturePad):
-                symbol_geom = parse_symbol(feat,usersym.featfile.symbol_dict[feat.sym_num])
+            if isinstance(feat,ODBFeaturePad):
+                symbol_geom = parse_symbol(feat,usersym.featfile.symbol_dict[feat.sym_num],netname,scale)
                 symbol_geom.transform.cascade(xf)
                 symbol_polygons.append(symbol_geom)
-            elif isinstance(feat,odb.ODBFeatureSurface):
+            elif isinstance(feat,ODBFeatureSurface):
                 shell_poly = None
                 hole_polys = []
                 for poly in feat.polygons:
-                    if poly.poly_type == odb.ODBPolygonType.ISLAND:
+                    if poly.poly_type == ODBPolygonType.ISLAND:
                         if shell_poly is not None:
                             print("WARNING: More than one island for surface!")
                         shell_poly = GeomSimplePolygon.from_odb_polygon(poly)
@@ -949,7 +954,7 @@ def parse_symbol(pad: odb.ODBFeaturePad, symbol: odb.ODBSymbol, scale=1e-3):
                         hole_poly.transform.cascade(xf)
                         hole_polys.append(hole_poly)
                         
-                surface_polygons.append(GeomPolygon(shell_poly,hole_polys))
+                surface_polygons.append(GeomPolygon(shell_poly,hole_polys,netname))
             else:
                 raise ValueError(f"User symbol with feature other than surface or pad: {feat}")
         if len(surface_polygons) == 1 and len(symbol_polygons) == 0:
@@ -963,31 +968,31 @@ def parse_symbol(pad: odb.ODBFeaturePad, symbol: odb.ODBSymbol, scale=1e-3):
         return [symgeom]
     
     xf = get_pad_transform(pad)  # rotate, scale, translation
-    if isinstance(symbol,odb.ODBRoundSymbol):
-        symgeom = GeomSymbolRound(symbol.diameter*scale,transform=xf.copy())
-    elif isinstance(symbol,odb.ODBRectangleSymbol):
-        symgeom = GeomSymbolRectangle(symbol.width*scale, symbol.height*scale,
+    if isinstance(symbol,ODBRoundSymbol):
+        symgeom = GeomSymbolRound(symbol.diameter*scale,netname,transform=xf.copy())
+    elif isinstance(symbol,ODBRectangleSymbol):
+        symgeom = GeomSymbolRectangle(symbol.width*scale, symbol.height*scale,netname,
                                       centered=True,transform=xf.copy())
-    elif isinstance(symbol,odb.ODBSquareSymbol):
-        symgeom = GeomSymbolRectangle(symbol.side*scale, symbol.side*scale,
+    elif isinstance(symbol,ODBSquareSymbol):
+        symgeom = GeomSymbolRectangle(symbol.side*scale, symbol.side*scale,netname,
                                       centered=True,transform=xf.copy())
-    elif isinstance(symbol,odb.ODBRoundedRectangleSymbol):
+    elif isinstance(symbol,ODBRoundedRectangleSymbol):
         symgeom = GeomSymbolRoundedRectangle(symbol.width*scale, symbol.height*scale, 
-                                             symbol.radius*scale,centered=True,transform=xf.copy())
-    elif isinstance(symbol,odb.ODBOvalSymbol):
+                                             symbol.radius*scale,netname,centered=True,transform=xf.copy())
+    elif isinstance(symbol,ODBOvalSymbol):
         crad = symbol.width/2
         if symbol.width > symbol.height:
             crad = symbol.height/2
         symgeom = GeomSymbolRoundedRectangle(symbol.width*scale, symbol.height*scale,
-                                             crad*scale,centered=True,transform=xf.copy())
-    elif isinstance(symbol,odb.ODBHalfOvalSymbol):
+                                             crad*scale,netname,centered=True,transform=xf.copy())
+    elif isinstance(symbol,ODBHalfOvalSymbol):
         crad = symbol.width/2
         if symbol.width > symbol.height:
             crad = symbol.height/2
         corners = [GeomCorner.BOTTOMRIGHT,GeomCorner.TOPRIGHT]
         symgeom = GeomSymbolRoundedRectangle(symbol.width*scale, symbol.height*scale,
-                                             crad*scale,corners,centered=True,transform=xf.copy())
-    elif isinstance(symbol,odb.ODBUserSymbol):
+                                             crad*scale,netname,corners,centered=True,transform=xf.copy())
+    elif isinstance(symbol,ODBUserSymbol):
         symgeoms = _parse_user_symbol(pad, symbol)
         return symgeoms
 
@@ -995,22 +1000,31 @@ def parse_symbol(pad: odb.ODBFeaturePad, symbol: odb.ODBSymbol, scale=1e-3):
         raise NotImplementedError(f"Symbol {symbol} not yet implemented.")
     return symgeom
 
-def parse_layer_geom(layer: odb.ODBLayer, user_sym_dict, edadata):
+def parse_layer_geom(layer: ODBLayer, user_sym_dict, edadata: ODB_EDA_Data, electrical_only=True):
+    """Main method for parsing a layer's features into PCB geometry"""
     # break layer graph up on a per-symbol basis
-    layer_symbol_subgraphs = layer.get_partitioned_graph(user_sym_dict,edadata.feature_netnames)
+    layer_symbol_subgraphs = layer.get_partitioned_graph(user_sym_dict,edadata.feat_netname_on_layer)
     # layer_symbol_subgraphs is a dict from symbol number -> list of subgraphs for that symbol
 
     # make subtraces
-    subtraces = {}
-
+    subtraces = {}  # netname : list[subtraces]
+    skip_trace = False
     for symnum, sgs in layer_symbol_subgraphs.items():
         for sg in sgs:
             netname = sg.graph['netname']
-            if netname not in subtraces.keys():
-                subtraces[netname] = []
-            subtraces[netname].append(GeomSubtrace.from_graph(sg))
+            if electrical_only:
+                if netname == '$NONE$':
+                    # Check if this is a non-electrical layer (no subnet)
+                    for u,v,data in sg.edges(data=True):
+                        if edadata.get_feature_FID(layer.name,data['fnum']) is None:
+                            skip_trace = True
+                            break
+            if not skip_trace:
+                if netname not in subtraces.keys():
+                    subtraces[netname] = []
+                subtraces[netname].append(GeomSubtrace.from_graph(sg))
 
-    # Union and plot subtraces with Shapely
+    # Build subtrace, symbol, and surface geoms
     all_net_polygons = []
     symbol_polygons = []
     surface_polygons = []
@@ -1020,18 +1034,27 @@ def parse_layer_geom(layer: odb.ODBLayer, user_sym_dict, edadata):
 
     # Parse pads and surfaces
     for feat in layer.featfile.features_list:
-        if isinstance(feat,odb.ODBFeaturePad):
+        netname = None
+        if layer.name in edadata.feat_netname_on_layer.keys():
+            netname = edadata.feat_netname_on_layer[layer.name].get(feat.fnum)
+        if netname is None:
+            netname = '$NONE$'
+        if netname == '$NONE$':
+            if electrical_only:
+                if edadata.get_feature_FID(layer.name,feat.fnum) is None:
+                    continue
+        if isinstance(feat,ODBFeaturePad):
             symbol = layer.featfile.symbol_dict[feat.sym_num]
-            symbol_geom = parse_symbol(feat,symbol)
+            symbol_geom = parse_symbol(feat,symbol,netname)
             if isinstance(symbol_geom,list):    
                 symbol_polygons += symbol_geom
             else:
                 symbol_polygons.append(symbol_geom)
-        elif isinstance(feat,odb.ODBFeatureSurface):
+        elif isinstance(feat,ODBFeatureSurface):
             shell_poly = None
             hole_polys = []
             for poly in feat.polygons:
-                if poly.poly_type == odb.ODBPolygonType.ISLAND:
+                if poly.poly_type == ODBPolygonType.ISLAND:
                     if shell_poly is not None:
                         print("WARNING: More than one island for surface!")
                     shell_poly = GeomSimplePolygon.from_odb_polygon(poly)
@@ -1040,7 +1063,7 @@ def parse_layer_geom(layer: odb.ODBLayer, user_sym_dict, edadata):
                     hole_polys.append(GeomSimplePolygon.from_odb_polygon(poly))
                     # surface_polygons.append(geom.GeomSimplePolygon.from_odb_polygon(poly).to_shapely())
                     
-            surface_polygons.append(GeomPolygon(shell_poly,hole_polys))
+            surface_polygons.append(GeomPolygon(shell_poly,hole_polys,netname))
 
     return all_net_polygons+symbol_polygons+surface_polygons
 
@@ -1083,5 +1106,137 @@ def plot_shapely_as_patch(polygon,ax=None,**patchkwargs):
         x = xx.tolist()
         y = yy.tolist()
         ax.plot(x,y)
+
+
+class ODBArchive:
+    def __init__(self,root_name,electrical_only=True):
+        self.root_p = Path(root_name)
         
+        self.odbconf = load_ODB(self.root_p)
+        self.user_sym_dict = load_user_symbols(self.odbconf)  # Needs to be done manually
+        
+        # Load EDA data
+        print("Loading EDA data...")
+        self.edadata = ODB_EDA_Data(self.odbconf)
+        
+        # Get simulatable layer types
+        print("Loading layers...")
+        self.layernames = []
+        self.layers = {}
+        self.geoms_on_layer = {}
+        for layer in self.odbconf.matrix.matrix_layers:
+            if layer.layertype in SIMULATION_LAYER_TYPES:
+                if layer.name.lower() not in ['comp_+_top','comp_+_bot']:
+                    print(f'\tLayer: {layer.name.lower()}')
+                    self.layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
+                    self.layers[layer.name.lower()] = ODBLayer(self.odbconf,layer.name.lower(),self.user_sym_dict)
+                    self.geoms_on_layer[layer.name.lower()] = parse_layer_geom(self.layers[layer.name.lower()],self.user_sym_dict,self.edadata,electrical_only)
+        # Add top-level board profile
+        print("Loading profile...")
+        profile = ODBLayer(self.odbconf,'profile',self.user_sym_dict,is_toplevel=True)
+        self.layers['profile'] = profile
+        self.layernames.append('profile')
+        self.geoms_on_layer['profile'] = parse_layer_geom(self.layers['profile'],self.user_sym_dict,self.edadata,electrical_only=False)
+        print("ODB archive loaded.")
+    
+    def render_layer(self,layername,ax=None,**patchkwargs):
+        if layername not in self.layernames:
+            raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
+        # Get geometry
+        layer_shapelys = [gg.to_shapely() for gg in self.geoms_on_layer[layername]]
+        # Plot
+        if ax is None:
+            fig,ax = plt.subplots(1,1,figsize=(7,7))
+            ax.set_aspect('equal')
+            ax.set_box_aspect(1)
+        big_union = shapely.disjoint_subset_union_all(layer_shapelys)
+        for buf in big_union.geoms:
+            plot_shapely_as_patch(buf,ax,**patchkwargs)
+        ax.autoscale()
+    
+    def _get_polygon_cad(self,polygon,thickness,in_to_mm=True):
+        if polygon.geom_type != 'Polygon':
+            print(f"Warning! Found shape other than Polygon: {polygon.geom_type}. Skipping.")
+            return None
+        xx,yy = polygon.exterior.coords.xy
+        x = xx.tolist()
+        y = yy.tolist()
+        shell_vtxs = list(zip(x,y))
+        holes_vtxs = []
+        for polyint in polygon.interiors:
+            xx,yy = polyint.coords.xy
+            x = xx.tolist()
+            y = yy.tolist()
+            hole_vtxs = list(zip(x,y))
+            holes_vtxs.append(hole_vtxs)
+        
+        # Now we have shell_vtxs and holes_vtxs
+        # holes_vtxs is a list of list-of-vertices
+        try:
+            cadpoly = cq.Workplane("front").polyline(shell_vtxs).close()
+            # Now cut holes out
+            for hole_vtxs in holes_vtxs:
+                cadpoly = cadpoly.polyline(hole_vtxs).close()
+            cadpoly = cadpoly.extrude(thickness)
+            if in_to_mm:
+                cadpoly = cadpoly.val().scale(25.4)
+            return cadpoly
+        except:
+            print("Bad geometry, simplifying with tolerance 0.1 mil...")
+            poly_simpl = shapely.simplify(polygon,1e-4)
+            xx,yy = poly_simpl.exterior.coords.xy
+            x = xx.tolist()
+            y = yy.tolist()
+            shell_vtxs = list(zip(x,y))
+            holes_vtxs = []
+            for polyint in poly_simpl.interiors:
+                xx,yy = polyint.coords.xy
+                x = xx.tolist()
+                y = yy.tolist()
+                hole_vtxs = list(zip(x,y))
+                holes_vtxs.append(hole_vtxs)
+            cadpoly = cq.Workplane("front").polyline(shell_vtxs).close()
+            # Now cut holes out
+            for hole_vtxs in holes_vtxs:
+                cadpoly = cadpoly.polyline(hole_vtxs).close()
+            cadpoly = cadpoly.extrude(thickness)
+            if in_to_mm:
+                cadpoly = cadpoly.val().scale(25.4)
+            return cadpoly
+            print("Success")
+    
+    def export_layer_step(self,layername,in_to_mm=True):
+        if layername not in self.layernames:
+            raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
+        # Get geometry
+        layer_shapelys = [gg.to_shapely() for gg in self.geoms_on_layer[layername]]
+        big_union = shapely.disjoint_subset_union_all(layer_shapelys)
+        cadpolys = []
+        if isinstance(big_union,shapely.Polygon):
+            if layername == 'profile':
+                thickness = self.odbconf.board_thickness
+            else:
+                thickness = self.layers[layername].copper_weight*1.37e-3  # convert from oz cu to inches
+            cadpoly = self._get_polygon_cad(big_union,thickness)
+            if cadpoly is not None:
+                cadpolys.append(cadpoly)
+        else:
+            for i,polygon in enumerate(big_union.geoms):
+                print(f"Polygon {i+1}/{len(big_union.geoms)}")
+                if polygon.geom_type != 'Polygon':
+                    print(f"Warning! Found shape other than Polygon: {polygon.geom_type}. Skipping.")
+                    continue
+                thickness = self.layers[layername].copper_weight*1.37e-3  # convert from oz cu to inches
+                cadpoly = self._get_polygon_cad(polygon,thickness)
+                if cadpoly is not None:
+                    cadpolys.append(cadpoly)
+
+        print("Assembling...")
+        assy = cq.Assembly()
+        for wp in cadpolys:
+            assy.add(wp)
+        print("Assembly complete. Exporting to STEP...")
+        step_path = self.root_p.parent/f'{self.root_p.name}_{layername}.step'
+        assy.export(str(step_path))
+        print("Export complete.")
 

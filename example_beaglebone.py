@@ -6,21 +6,18 @@ Created on Wed Mar  4 16:02:08 2026
 """
 from pathlib import Path
 import numpy as np
-import networkx as nx  # graph library for mapping nets to lines
 
-import shapely
-from shapely import LineString  # library for performing boolean operations and buffering/offsetting traces
-# see also: https://github.com/proto3/cavaliercontours-python
+import cadquery as cq
+import cadquery.vis as cqvis
 
 # For testing only
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from coordinate2 import Coordinate2
-import pcb_geom as geom
 
 from random import random
 
 import odbparse as odb
+from odbparse import Coordinate2
 
 color_cycle = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 ncolors = len(color_cycle)
@@ -40,55 +37,37 @@ def plot_graph(g,ax=None,color=None,linestyle='-',randomize=False):#,marker='non
     
     ax.autoscale()
 
+            
 
-root_name = 'examples/beagleboneblack'
-root_p = Path(root_name)
-odbconf = odb.load_ODB(root_p)
-user_sym_dict = odb.load_user_symbols(odbconf)  # Needs to be done manually
-# Load EDA data
-edadata = odb.ODB_EDA_Data(odbconf)
-# Load specific layers
-toplayer = odb.ODBLayer(odbconf,'top',user_sym_dict)
-bottomlayer = odb.ODBLayer(odbconf,'bottom',user_sym_dict)
-lyr4layer = odb.ODBLayer(odbconf,'lyr4',user_sym_dict)
-profile = odb.ODBLayer(odbconf,'profile',user_sym_dict,is_toplevel=True)
+root_name1 = r'examples/beagleboneblack'
 
-# Get simulatable layer types
-# layernames = []
-# for layer in odbconf.matrix.matrix_layers:
-#     if layer.layertype in odb.SIMULATION_LAYER_TYPES:
-#         layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
+ark = odb.ODBArchive(root_name1,electrical_only=True)
 
-# Ok enough setup - let's generate some layer geometry
-for layer in [toplayer]:#,lyr4layer]:#bottomlayer
-    layer_geoms = geom.parse_layer_geom(layer,user_sym_dict,edadata)
-    layer_shapelys = [gg.to_shapely() for gg in layer_geoms]
-    
-    
-    # Let's plot
-    fig,ax = plt.subplots(1,1,figsize=(7,7))
-    ax.set_aspect('equal')
-    ax.set_box_aspect(1)
-    big_union = shapely.disjoint_subset_union_all(layer_shapelys)
-    for buf in big_union.geoms:
-        geom.plot_shapely_as_patch(buf,ax)
-    ax.autoscale()
-    ax.set_title(layer.name)
+# %%
+# ark.export_layer_step('top')
+# ark.export_layer_step('lyr2_gnd')
+# ark.export_layer_step('lyr3')
+# ark.export_layer_step('lyr4')
+# ark.export_layer_step('lyr5_pwr')
+# ark.export_layer_step('bottom')
+ark.export_layer_step('profile')
 
-# %% Problem layer
-layer_geoms = geom.parse_layer_geom(bottomlayer,user_sym_dict,edadata)
-layer_shapelys = [gg.to_shapely() for gg in layer_geoms]
+# TODO handle drill layer
+
+# %% Visualize unnamed nets
+# fig,ax = plt.subplots(1,1,figsize=(7,7))
+# ax.set_aspect('equal')
+# ax.set_box_aspect(1)
+
+# # ark.render_layer('top',ax,color='b')
+# for geom in ark.geoms_on_layer['top']:
+#     shape = geom.to_shapely()
+#     if geom.netname == '$NONE$':
+#         odb.plot_shapely_as_patch(shape, ax, color='r')
+#     else:
+#         odb.plot_shapely_as_patch(shape, ax, color='b')
 
 
-# Let's plot
-fig,ax = plt.subplots(1,1,figsize=(7,7))
-ax.set_aspect('equal')
-ax.set_box_aspect(1)
-big_union = shapely.disjoint_subset_union_all(layer_shapelys)
-for buf in big_union.geoms:
-    geom.plot_shapely_as_patch(buf,ax)
-ax.autoscale()
-ax.set_title(layer.name)
 
 # %% Convert to EMerge
 # Make something for EMerge
