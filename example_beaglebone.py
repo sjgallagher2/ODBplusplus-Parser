@@ -10,6 +10,8 @@ import numpy as np
 import cadquery as cq
 import cadquery.vis as cqvis
 
+import shapely
+
 # For testing only
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -42,7 +44,7 @@ def plot_graph(g,ax=None,color=None,linestyle='-',randomize=False):#,marker='non
 root_name1 = r'examples/beagleboneblack'
 
 ark = odb.ODBArchive(root_name1,electrical_only=True)
-
+# ark.load_layer('rout')
 # %%
 # ark.export_layer_step('top')
 # ark.export_layer_step('lyr2_gnd')
@@ -50,25 +52,67 @@ ark = odb.ODBArchive(root_name1,electrical_only=True)
 # ark.export_layer_step('lyr4')
 # ark.export_layer_step('lyr5_pwr')
 # ark.export_layer_step('bottom')
-ark.export_layer_step('profile')
+# ark.export_layer_step('profile')
+# ark.export_layer_step('drill')
 
-# TODO handle drill layer
+# %% Define stackup
+# top       
+# core1     3.6mil, er = 4.05
+# lyr2_gnd  
+# core2     4.6mil, er = 4.5
+# lyr3      
+# core3     36mil, er = 4.5
+# lyr4      
+# core4     4.6mil, er = 4.5
+# lyr5_pwr  
+# core5     3.6mil, er = 4.05
+# bottom    
 
-# %% Visualize unnamed nets
-# fig,ax = plt.subplots(1,1,figsize=(7,7))
-# ax.set_aspect('equal')
-# ax.set_box_aspect(1)
+# Update manually
+ark.layers['top'].dielectric_constant = 4.05
+ark.layers['top'].layer_dielectric = 3.6e-3
 
-# # ark.render_layer('top',ax,color='b')
-# for geom in ark.geoms_on_layer['top']:
-#     shape = geom.to_shapely()
-#     if geom.netname == '$NONE$':
-#         odb.plot_shapely_as_patch(shape, ax, color='r')
-#     else:
-#         odb.plot_shapely_as_patch(shape, ax, color='b')
+ark.layers['lyr2_gnd'].dielectric_constant = 4.5
+ark.layers['lyr2_gnd'].layer_dielectric = 4.6e-3
 
+ark.layers['lyr3'].dielectric_constant = 4.5
+ark.layers['lyr3'].layer_dielectric = 36e-3
 
+ark.layers['lyr4'].dielectric_constant = 4.5
+ark.layers['lyr4'].layer_dielectric = 4.6e-3
 
+ark.layers['lyr5_pwr'].dielectric_constant = 4.5
+ark.layers['lyr5_pwr'].layer_dielectric = 3.6e-3
+
+ark.layers['bottom'].dielectric_constant = 4.05
+ark.layers['bottom'].layer_dielectric = 0.0
+
+# Now calculate the position of each of these layers
+zpos = ark.odbconf.board_thickness  # start at the top
+layer_zpos = {}
+for i in range(len(ark.odbconf.matrix.matrix_layers)):
+    ml = ark.odbconf.matrix.get_layer_by_row(i)
+    if ml is None:
+        continue
+    name = ml.name.lower()
+    if name in ark.layernames:
+        if ark.layers[name].layertype != odb.ODBLayerMatrixType.DRILL:
+            layer_zpos[name] = zpos - ark.layers[name].thickness 
+            zpos -= (ark.layers[name].thickness + ark.layers[name].layer_dielectric)
+
+for name,pos in layer_zpos.items():
+    print(f"{name}\t\t {pos:.4f}")
+
+# Now adjust board thickness for profile
+# Simply subtracting copper thickness for top and bottom
+# Then moving it up
+profile_zpos = layer_zpos['bottom']+ark.layers['bottom'].thickness
+ark.layers['profile'].thickness = layer_zpos['top']-profile_zpos
+
+# Finally, export with z-position
+# for name,zpos in layer_zpos.items():
+#     ark.export_layer_step(name,z_offset=zpos)
+ark.export_layer_step('profile',z_offset=profile_zpos)
 # %% Convert to EMerge
 # Make something for EMerge
 

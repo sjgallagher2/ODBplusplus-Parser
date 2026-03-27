@@ -21,12 +21,14 @@ import cadquery as cq
 
 # Module
 from ._coordinate2 import Coordinate2
+# matrix
+from ._odbparse import ODBLayerMatrixType,SIMULATION_LAYER_TYPES
 # features
 from ._odbparse import ODBPolygonType,ODBPolygon,ODBFeatureSurface,ODBFeatureLine,ODBFeatureArc,ODBPolyCurve,ODBFeaturePadOrientation,ODBFeaturePad
 # symbols
 from ._odbparse import ODBSymbol,ODBRoundSymbol,ODBSquareSymbol,ODBRectangleSymbol,ODBRoundedRectangleSymbol,ODBOvalSymbol,ODBHalfOvalSymbol,ODBUserSymbol
 # higher level
-from ._odbparse import ODBLayer,SIMULATION_LAYER_TYPES,load_ODB,load_user_symbols,ODB_EDA_Data
+from ._odbparse import ODBLayer,load_ODB,load_user_symbols,ODB_EDA_Data
 
 pi = 3.14159265358979
 
@@ -1124,6 +1126,7 @@ class ODBArchive:
         self.layernames = []
         self.layers = {}
         self.geoms_on_layer = {}
+        self._drill_shapelys = None
         for layer in self.odbconf.matrix.matrix_layers:
             if layer.layertype in SIMULATION_LAYER_TYPES:
                 if layer.name.lower() not in ['comp_+_top','comp_+_bot']:
@@ -1131,6 +1134,9 @@ class ODBArchive:
                     self.layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
                     self.layers[layer.name.lower()] = ODBLayer(self.odbconf,layer.name.lower(),self.user_sym_dict)
                     self.geoms_on_layer[layer.name.lower()] = parse_layer_geom(self.layers[layer.name.lower()],self.user_sym_dict,self.edadata,electrical_only)
+            if layer.layertype == ODBLayerMatrixType.DRILL:
+                # Add drill shapely
+                self._drill_shapelys = self.get_layer_shapelys(layer.name.lower(),do_union=False,subtract_drill=False)
         # Add top-level board profile
         print("Loading profile...")
         profile = ODBLayer(self.odbconf,'profile',self.user_sym_dict,is_toplevel=True)
@@ -1138,6 +1144,12 @@ class ODBArchive:
         self.layernames.append('profile')
         self.geoms_on_layer['profile'] = parse_layer_geom(self.layers['profile'],self.user_sym_dict,self.edadata,electrical_only=False)
         print("ODB archive loaded.")
+    
+    def load_layer(self,layername):
+        self.layernames.append(layername.lower())
+        self.layers[layername.lower()] = ODBLayer(self.odbconf,layername.lower(),self.user_sym_dict)
+        self.geoms_on_layer[layername.lower()] = parse_layer_geom(self.layers[layername.lower()],
+                                                                  self.user_sym_dict,self.edadata,electrical_only=False)
     
     def render_layer(self,layername,ax=None,**patchkwargs):
         if layername not in self.layernames:
@@ -1154,7 +1166,33 @@ class ODBArchive:
             plot_shapely_as_patch(buf,ax,**patchkwargs)
         ax.autoscale()
     
-    def _get_polygon_cad(self,polygon,thickness,in_to_mm=True):
+    def get_layer_shapelys(self,layername,do_union=True,subtract_drill=True):
+        """Call to_shapely() on all geometries on layer and optionally union them."""
+        if layername not in self.layernames:
+            raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
+        # Get geometry
+        layer_shapelys = [gg.to_shapely() for gg in self.geoms_on_layer[layername]]
+        if do_union:
+            layer_shapelys = shapely.disjoint_subset_union_all(layer_shapelys)
+        else:
+            layer_shapelys = shapely.MultiPolygon(layer_shapelys)
+        if subtract_drill:
+            if self._drill_shapelys is not None:
+                layer_shapelys = layer_shapelys - self._drill_shapelys
+            else:
+                print("Warning: subtract_drill specific but no drill shapes loaded.")
+        return layer_shapelys
+    
+    def _get_shapely_cad(self,polygon,thickness,z_offset:float=0.0, in_to_mm=True):
+        """
+        Convert a 2D shapely polygon with shell and holes into a extrusion of height `thickness`.
+        If thickness < 0, extrude down; otherwise extrude up. 
+        
+        If `z_offset` is nonzero, use that as the plane to extrude from. The z-offset 
+        is applied before the `in_to_mm` conversion. 
+        
+        If in_to_mm==True, scale the CAD by 25.4x right before returning. 
+        """
         if polygon.geom_type != 'Polygon':
             print(f"Warning! Found shape other than Polygon: {polygon.geom_type}. Skipping.")
             return None
@@ -1173,7 +1211,7 @@ class ODBArchive:
         # Now we have shell_vtxs and holes_vtxs
         # holes_vtxs is a list of list-of-vertices
         try:
-            cadpoly = cq.Workplane("front").polyline(shell_vtxs).close()
+            cadpoly = cq.Workplane("front").workplane(z_offset).polyline(shell_vtxs).close()
             # Now cut holes out
             for hole_vtxs in holes_vtxs:
                 cadpoly = cadpoly.polyline(hole_vtxs).close()
@@ -1195,7 +1233,7 @@ class ODBArchive:
                 y = yy.tolist()
                 hole_vtxs = list(zip(x,y))
                 holes_vtxs.append(hole_vtxs)
-            cadpoly = cq.Workplane("front").polyline(shell_vtxs).close()
+            cadpoly = cq.Workplane("front").workplane(z_offset).polyline(shell_vtxs).close()
             # Now cut holes out
             for hole_vtxs in holes_vtxs:
                 cadpoly = cadpoly.polyline(hole_vtxs).close()
@@ -1205,31 +1243,79 @@ class ODBArchive:
             return cadpoly
             print("Success")
     
-    def export_layer_step(self,layername,in_to_mm=True):
+    def _get_copper_layer_cad(self,layername,z_offset: float = 0.0, in_to_mm=True):
         if layername not in self.layernames:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
-        # Get geometry
-        layer_shapelys = [gg.to_shapely() for gg in self.geoms_on_layer[layername]]
-        big_union = shapely.disjoint_subset_union_all(layer_shapelys)
+        layer_shapelys = self.get_layer_shapelys(layername,do_union=True)
         cadpolys = []
-        if isinstance(big_union,shapely.Polygon):
-            if layername == 'profile':
-                thickness = self.odbconf.board_thickness
-            else:
-                thickness = self.layers[layername].copper_weight*1.37e-3  # convert from oz cu to inches
-            cadpoly = self._get_polygon_cad(big_union,thickness)
+        
+        if isinstance(layer_shapelys,shapely.Polygon):
+            thickness = self.layers[layername].thickness
+            cadpoly = self._get_shapely_cad(layer_shapelys,thickness,z_offset=z_offset,in_to_mm=in_to_mm)
             if cadpoly is not None:
                 cadpolys.append(cadpoly)
         else:
-            for i,polygon in enumerate(big_union.geoms):
-                print(f"Polygon {i+1}/{len(big_union.geoms)}")
+            for i,polygon in enumerate(layer_shapelys.geoms):
+                print(f"{layername}: Polygon {i+1}/{len(layer_shapelys.geoms)}")
                 if polygon.geom_type != 'Polygon':
                     print(f"Warning! Found shape other than Polygon: {polygon.geom_type}. Skipping.")
                     continue
-                thickness = self.layers[layername].copper_weight*1.37e-3  # convert from oz cu to inches
-                cadpoly = self._get_polygon_cad(polygon,thickness)
+                thickness = self.layers[layername].thickness
+                cadpoly = self._get_shapely_cad(polygon,thickness,z_offset=z_offset,in_to_mm=in_to_mm)
                 if cadpoly is not None:
                     cadpolys.append(cadpoly)
+        return cadpolys
+    
+    def _get_profile_cad(self,z_offset:float=0.0,in_to_mm=True):
+        if 'profile' not in self.layernames:
+            raise ValueError(f"Could not find profile in layers. Known layers: {self.layernames}")
+        layer_shapelys = self.get_layer_shapelys('profile',do_union=True)
+        cadpolys = []
+        thickness = self.odbconf.board_thickness
+        cadpoly = self._get_shapely_cad(layer_shapelys,thickness,z_offset=z_offset,in_to_mm=in_to_mm)
+        if cadpoly is not None:
+            cadpolys.append(cadpoly)
+        return cadpolys
+    
+    def _get_drill_cad(self,layername: str, in_to_mm=True):
+        layer_shapelys = self._drill_shapelys
+        cadpolys = []
+        thickness = self.odbconf.board_thickness 
+                
+        for i,polygon in enumerate(layer_shapelys.geoms):
+            print(f"{layername}: Polygon {i+1}/{len(layer_shapelys.geoms)}")
+            if polygon.geom_type != 'Polygon':
+                print(f"Warning! Found shape other than Polygon: {polygon.geom_type}. Skipping.")
+                continue
+            cadpoly = self._get_shapely_cad(polygon,thickness,in_to_mm=in_to_mm)
+            if cadpoly is not None:
+                cadpolys.append(cadpoly)
+                
+        return cadpolys
+    
+    def export_layer_step(self,layername,z_offset: float = 0.0, in_to_mm=True):
+        if layername not in self.layernames:
+            raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
+        layertype = self.layers[layername].layertype
+        
+        if layertype in [ODBLayerMatrixType.POWER_GROUND,
+                         ODBLayerMatrixType.SIGNAL,
+                         ODBLayerMatrixType.MIXED]:
+            cadpolys = self._get_copper_layer_cad(layername,z_offset,in_to_mm)
+        elif layername == 'profile':
+            cadpolys = self._get_profile_cad(z_offset,in_to_mm)
+        elif layertype == ODBLayerMatrixType.DRILL:
+            cadpolys = self._get_drill_cad(layername,in_to_mm)
+        elif layertype == ODBLayerMatrixType.ROUT:
+            raise NotImplementedError("Routing layer not yet implemented.")
+        elif layertype == ODBLayerMatrixType.DIELECTRIC:
+            raise NotImplementedError("Dielectric layer not yet implemented.")
+        elif layertype in [ODBLayerMatrixType.CONDUCTIVE_PASTE,
+                           ODBLayerMatrixType.MASK,
+                           ODBLayerMatrixType.SILK_SCREEN,
+                           ODBLayerMatrixType.SOLDER_MASK,
+                           ODBLayerMatrixType.SOLDER_PASTE]:
+            raise NotImplementedError(f"Layer type {layertype} not yet implemented.")
 
         print("Assembling...")
         assy = cq.Assembly()

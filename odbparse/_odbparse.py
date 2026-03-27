@@ -1977,10 +1977,12 @@ class ODBLayer:
         self.z0impedance = self.attrdict.get('.z0impedance')  # typical characteristic impedance required for a layer
         # Try to calculate layer thickness
         self.thickness = 0.0
-        if self.layer_dielectric is not None:
-            self.thickness = self.layer_dielectric
         if self.copper_weight is not None:
-            pass  # convert oz cu to mils, or use microns
+            self.thickness = self.copper_weight*1.37e-3  # convert oz cu to mils, or use microns
+        elif self.layer_dielectric is not None:
+            self.thickness = self.layer_dielectric  # thickness of dielectric on which copper sits, only if we don't get copper thickness
+        if self.name.lower() == 'profile':
+            self.thickness = self.odbconf.board_thickness
         
         # Load useful attributes from matrix layer info
         self.layertype: ODBLayerMatrixType|None = None
@@ -2006,6 +2008,9 @@ class ODBLayer:
             self.form = self.matrix_layer.form 
             self.add_type = self.matrix_layer.add_type 
             self.color = self.matrix_layer.color
+        
+        if self.layertype == ODBLayerMatrixType.DRILL:
+            self.thickness = self.odbconf.board_thickness  # TODO Only through drills accepted for now, not blind or buried
         
         # Generate a graph for this layer
         layergraph = nx.Graph()
@@ -2065,8 +2070,10 @@ class ODBLayer:
                         continue
                     # Only need first feature
                     fnum = list(sg.edges(data=True))[0][2]['fnum']
-                    feat_net_lookup = feature_netnames[self.name]
-                    netname = feat_net_lookup.get(fnum)
+                    feat_net_lookup = feature_netnames.get(self.name)
+                    netname = None
+                    if feat_net_lookup is not None:
+                        netname = feat_net_lookup.get(fnum)
                     if netname is None:
                         netname = '$NONE$'
                     sg.graph['netname'] = netname
