@@ -17,9 +17,12 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 from random import random
+from dataclasses import dataclass 
+from enum import Enum,auto
+import re
 
 import odbparse as odb
-from odbparse import Coordinate2
+from odbparse import Coordinate2,ODBLayerMatrixType
 
 color_cycle = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 ncolors = len(color_cycle)
@@ -112,7 +115,10 @@ ark.layers['profile'].thickness = layer_zpos['top']-profile_zpos
 # Finally, export with z-position
 # for name,zpos in layer_zpos.items():
 #     ark.export_layer_step(name,z_offset=zpos)
-ark.export_layer_step('profile',z_offset=profile_zpos)
+# ark.export_layer_step('profile',z_offset=profile_zpos)
+
+
+
 # %% Convert to EMerge
 # Make something for EMerge
 

@@ -1896,6 +1896,191 @@ def partition_non_branching(graph: nx.Graph):
         
     return subgraphs
 
+# Components have CMP (component), PRP (property), and TOP (toeprint) records
+@dataclass
+class ODBComponentRecord:
+    """
+    Each CMP line is followed by 0 or more property (PRP) records and 0 or more TOP
+    records.
+    CMP <pkg_ref> <x> <y> <rot> <mirror> <comp_name> <part_name> ; <attributes>
+            <pkg_ref> The number of the package in the eda/data file
+            <x>,<y> The board location of the component in inches
+            <rot> The rotation of the component, in degrees, clockwise.
+            <mirror> 'N' for not mirrored, 'M' for mirrored
+            <comp_name> component name (reference designator)
+            <part_name> part identification
+            <attributes>  This data is the same as for feature attributes (in the
+                          features file). It consists of comma separated list of values.
+    """
+    pkg_ref: int
+    loc: Coordinate2
+    rot_deg: float
+    mirror: bool
+    name: str  # ref des
+    part_id: str
+    attrs: list[str]
+    
+    @classmethod
+    def parse(cls,line,attrnames):
+        if line[0] != 'CMP':
+            raise ValueError(f"Got unexpected record type {line[0]}, expected CMP.")
+        pkg_ref = int(line[1])
+        x = float(line[2])
+        y = float(line[3])
+        rot_deg = float(line[4])
+        if line[5] == 'M':
+            mirror = True
+        else:
+            mirror = False
+        comp_name = line[6]
+        part_name = line[7]
+        attrs = []
+        if len(line) > 8:
+            attrs = line[8][1:].split(',')  # remove ; and split by commas
+        
+        attrdict = {}
+        for atxt in attrs:
+            if '=' in atxt:
+                atxt_split = atxt.split('=')
+                aid = int(atxt_split[0])
+                aval = atxt_split[1]
+                if '.' in aval:
+                    aval = float(aval)
+                elif aval.isdecimal():
+                    aval = int(aval)
+                attrdict[attrnames[aid]] = aval
+            else:
+                attrdict[attrnames[int(atxt)]] = True
+        
+        return cls(pkg_ref,Coordinate2(x,y),rot_deg,mirror,comp_name,part_name,attrdict)
+
+@dataclass
+class ODBComponentToeprintRecord:
+    """
+    TOP <pin_num> <x> <y> <rot> <mirror> <net_num> <subnet_num> <toeprint_name>
+            <pin_num> The pin number inside the package of the component
+            <x>,<y> The board location of the pin in inches
+            <rot> The rotation of the component, in degrees, clockwise.
+            <mirror> N for not mirrored, M for mirrored
+            <net_num> Number of net in the eda/data file*
+            <subnet_num> Number of subnet within referenced net
+            <toeprint_name> Name of the toeprint
+
+    *The net_num used in the TOP record corresponds to the sequence of the Net
+    records in the eda/data file. The first Net record is net_num 0, the second is
+    net_num 1 and so on. 
+    """
+    pin_num: int
+    loc: Coordinate2
+    rot_deg: float
+    mirror: bool
+    net_num: int
+    subnet_num: int
+    toeprint_name: str
+    
+    @classmethod
+    def parse(cls,line):
+        if line[0] != 'TOP':
+            raise ValueError(f"Got unexpected record type {line[0]}, expected TOP.")
+        pin_num = int(line[1])
+        x = float(line[2])
+        y = float(line[3])
+        loc = Coordinate2(x,y)
+        rot_deg = float(line[4])
+        if line[5] == 'M':
+            mirror = True
+        else:
+            mirror = False
+        net_num = int(line[6])
+        subnet_num = int(line[7])
+        toeprint_name = line[8]
+        return cls(pin_num,loc,rot_deg,mirror,net_num,subnet_num,toeprint_name)
+        
+@dataclass
+class ODBComponentPropertyRecord:
+    """
+    A property consists of a name, a string value and 0 or more floating numbers.
+    PRP <name> '<value>' n1 n2 ...
+            <name> The name of the property
+            <value> The string of the property (between quotes)
+            n1,n2,... The floating numbers to be kept in the property
+    """
+    name: str
+    value: str
+    prop_nums: list[str]
+    
+    pattern = re.compile(r"PRP (?P<name>[^\s]+) \'(?P<value>[^\']+)\'\s?(?P<propnums>.*)")
+
+    @classmethod
+    def parse(cls,line):
+        if line[0] != 'PRP':
+            raise ValueError(f"Got unexpected record type {line[0]}, expected PRP.")
+        
+        m = cls.pattern.match(' '.join(line))
+        if m is None:
+            raise ValueError(f"Failed to parse line {line} as PRP record.")
+        name = m.group('name')
+        value = m.group('value')
+        prop_nums = m.group('propnums')
+        if prop_nums == '':
+            prop_nums = []
+        
+        return cls(name,value,prop_nums)        
+
+
+class ODBComponent:
+    def __init__(self,comp_rec: ODBComponentRecord,
+                 toeprint_recs: list[ODBComponentToeprintRecord],
+                 prop_recs: list[ODBComponentPropertyRecord]):
+        self.component_record = comp_rec
+        self.toeprint_records = toeprint_recs
+        self.property_records = prop_recs
+
+class ODBComponentFile:
+    def __init__(self,root: Path):
+        self.comp_path = root/'components'
+        lines = None
+        with open(self.comp_path) as f:
+            lines = f.readlines()
+            lines = [l.strip() for l in lines if l.strip()!='']
+            lines = [l.split() for l in lines if not l.startswith('#')]
+            if len(lines) == 0:
+                raise ValueError("No lines")  # testing only
+
+        # Load records
+        i=0
+        self.attrnames = []  # attribute names, in order, zero-indexed
+        while lines[i][0].startswith('@'):
+            self.attrnames.append(lines[i][1])
+            i += 1
+
+        self.recs = []
+        self.components = {}   # component name (refdes) : Component
+        active_comp_rec = None
+        active_top_recs = []
+        active_prop_recs = []
+        
+        for rectxt in lines[i:]:
+            if rectxt[0] == 'CMP':
+                if active_comp_rec is not None:
+                    # Finish
+                    comp = ODBComponent(active_comp_rec,active_top_recs,active_prop_recs)
+                    self.components[active_comp_rec.name] = comp
+                rec = ODBComponentRecord.parse(rectxt,self.attrnames)
+                active_comp_rec = None
+                active_top_recs = []
+                active_prop_recs = []
+            elif rectxt[0] == 'TOP':
+                rec = ODBComponentToeprintRecord.parse(rectxt)
+                active_top_recs.append(rec)
+            elif rectxt[0] == 'PRP':
+                rec = ODBComponentPropertyRecord.parse(rectxt)
+                active_prop_recs.append(rec)
+            else:
+                raise ValueError(f"Unknown record type: {rec}")
+            self.recs.append(rec)
+            
+
 class ODBLayer:
     """
     Class representing a PCB layer with features from an ODB++ archive
@@ -2010,7 +2195,13 @@ class ODBLayer:
             self.color = self.matrix_layer.color
         
         if self.layertype == ODBLayerMatrixType.DRILL:
-            self.thickness = self.odbconf.board_thickness  # TODO Only through drills accepted for now, not blind or buried
+            self.thickness = self.odbconf.board_thickness  # TODO Only through-drills accepted for now, not blind or buried
+        
+        # Parse components if available
+        self.component_file = None
+        if self.layertype == ODBLayerMatrixType.COMPONENT:
+            self.component_file = ODBComponentFile(self.layer_root_path)
+            self.thickness = 0
         
         # Generate a graph for this layer
         layergraph = nx.Graph()
@@ -2388,7 +2579,8 @@ class ODB_EDA_Package:
     def __init__(self,pkg_record: ODB_EDA_PackageRecord, 
                  outline_record: ODB_EDA_CircleRecord|ODB_EDA_SquareRecord|ODB_EDA_RectangleRecord|ODB_EDA_ContourRecord,
                  property_recs: ODB_EDA_PropertyRecord=None,
-                 pins: list[ODB_EDA_Pin]=None):
+                 pins: list[ODB_EDA_Pin]=None,
+                 pkg_num: int=-1):
         self.record = pkg_record 
         self.name = self.record.name  # steal attributes for convenience
         self.pitch = self.record.pitch 
@@ -2396,6 +2588,7 @@ class ODB_EDA_Package:
         self.outline_record = outline_record
         self.property_recs = property_recs or []
         self.pins = pins or []
+        self.pkg_num = pkg_num
     
     def __repr__(self):
         return f'ODB_EDA_Package(record={self.record},outline_record={self.outline_record},property_recs={self.property_recs},pins={self.pins})'
@@ -2511,7 +2704,9 @@ class ODB_EDA_Data:
         active_subnet = -1
         subnet_fids = []
         # Parsing packages
-        self.packages = {}
+        self.packages = {}  # package name : Package
+        self.package_number_name_lookup = {}  # package number : package name
+        pkg_num = 0
         active_pkg = -1
         pkg_outline_rec = None
         pkg_props = []
@@ -2572,7 +2767,9 @@ class ODB_EDA_Data:
                     subnet_fids = []
                 if active_pkg != -1:
                     # finish up, reset
-                    self.packages[self.recs[active_pkg].name] = ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins)
+                    self.packages[self.recs[active_pkg].name] = ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins,pkg_num)
+                    self.package_number_name_lookup[pkg_num] = self.recs[active_pkg].name
+                    pkg_num += 1
                     pkg_props = []
                     pkg_pins = []
                     active_pin = -1
@@ -2582,7 +2779,9 @@ class ODB_EDA_Data:
                 if active_pkg != -1:
                     # finish up, reset
                     # this probably won't ever occur
-                    self.packages[self.recs[active_pkg].name] = ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins)
+                    self.packages[self.recs[active_pkg].name] = ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins,pkg_num)
+                    self.package_number_name_lookup[pkg_num] = self.recs[active_pkg].name
+                    pkg_num += 1
                     pkg_props = []
                     pkg_pins = []
                     active_pin = -1
@@ -2642,7 +2841,7 @@ class ODB_EDA_Data:
             subnets = [sn for sn in subnets if feat_num in sn.feat_nums]
             return subnets
         return None
-        
+
 
 @dataclass 
 class ODBNetPoint:

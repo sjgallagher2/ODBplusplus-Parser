@@ -1129,11 +1129,15 @@ class ODBArchive:
         self._drill_shapelys = None
         for layer in self.odbconf.matrix.matrix_layers:
             if layer.layertype in SIMULATION_LAYER_TYPES:
+                print(f'\tLayer: {layer.name.lower()}')
+                self.layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
+                self.layers[layer.name.lower()] = ODBLayer(self.odbconf,layer.name.lower(),self.user_sym_dict)
                 if layer.name.lower() not in ['comp_+_top','comp_+_bot']:
-                    print(f'\tLayer: {layer.name.lower()}')
-                    self.layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
-                    self.layers[layer.name.lower()] = ODBLayer(self.odbconf,layer.name.lower(),self.user_sym_dict)
                     self.geoms_on_layer[layer.name.lower()] = parse_layer_geom(self.layers[layer.name.lower()],self.user_sym_dict,self.edadata,electrical_only)
+                else:
+                    # geoms on layer requires parsing packages
+                    pass
+                
             if layer.layertype == ODBLayerMatrixType.DRILL:
                 # Add drill shapely
                 self._drill_shapelys = self.get_layer_shapelys(layer.name.lower(),do_union=False,subtract_drill=False)
