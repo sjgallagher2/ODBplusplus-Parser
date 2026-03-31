@@ -2050,9 +2050,14 @@ class ODBComponentFile:
         # Load records
         i=0
         self.attrnames = []  # attribute names, in order, zero-indexed
+        self.attrstrs = []
         while lines[i][0].startswith('@'):
             self.attrnames.append(lines[i][1])
             i += 1
+        while lines[i][0].startswith('&'):
+            self.attrstrs.append(' '.join(lines[i][1:]))
+            i += 1
+            
 
         self.recs = []
         self.components = {}   # component name (refdes) : Component

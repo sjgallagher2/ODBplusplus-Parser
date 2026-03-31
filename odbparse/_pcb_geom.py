@@ -26,7 +26,7 @@ from ._odbparse import ODBLayerMatrixType,SIMULATION_LAYER_TYPES
 # features
 from ._odbparse import ODBPolygonType,ODBPolygon,ODBFeatureSurface,ODBFeatureLine,ODBFeatureArc,ODBPolyCurve,ODBFeaturePadOrientation,ODBFeaturePad
 # symbols
-from ._odbparse import ODBSymbol,ODBRoundSymbol,ODBSquareSymbol,ODBRectangleSymbol,ODBRoundedRectangleSymbol,ODBOvalSymbol,ODBHalfOvalSymbol,ODBUserSymbol
+from ._odbparse import ODBSymbol,ODBRoundSymbol,ODBSquareSymbol,ODBRectangleSymbol,ODBRoundedRectangleSymbol,ODBOvalSymbol,ODBHalfOvalSymbol,ODBUserSymbol,ODBDiamondSymbol
 # higher level
 from ._odbparse import ODBLayer,load_ODB,load_user_symbols,ODB_EDA_Data
 
@@ -613,6 +613,49 @@ class GeomSymbolRectangle(GeomSymbol):
         vtxs_xf = self.transform.apply(vtxs)
         return shapely.Polygon(vtxs_xf)
 
+class GeomSymbolDiamond(GeomSymbol):
+    def __init__(self, width: float, height: float, netname: str, centered=True, transform: GeomSymbolTransform=None):
+        """
+        Diamond (skew rectangle rotated 45 degrees) with width and height. By default, origin is the center.
+        
+        """
+        super().__init__(netname)
+        self.width = width
+        self.height = height
+        self.centered = centered
+        self.transform = transform or GeomSymbolTransform()
+    
+    def _get_vertices(self):
+        if self.centered:
+            corner_vtxs = [
+                (0.0, -self.height/2.),
+                (self.width/2., 0.0),
+                (0.0, +self.height/2.),
+                (-self.width/2., 0.0),
+                (0.0, -self.height/2.),
+                ]
+        else:
+            corner_vtxs = [
+                (self.width/2., 0.0),
+                (self.width, self.height/2.),
+                (self.width/2., self.height),
+                (0.0, self.height/2.),
+                (self.width/2., 0.0),
+                ]
+        return corner_vtxs
+    
+    def to_mpl(self, **patchkwargs) -> mpl.patches.Rectangle:
+        vtxs = self._get_vertices()
+        vtxs_xf = self.transform.apply(vtxs)
+        codes = [mpl.path.Path.MOVETO] + ([mpl.path.Path.LINETO]*(len(vtxs_xf)-1))
+        path = mpl.path.Path(vtxs_xf,codes)
+        patch = mpl.patches.PathPatch(path,**patchkwargs)
+        return patch
+    def to_shapely(self):
+        vtxs = self._get_vertices()
+        vtxs_xf = self.transform.apply(vtxs)
+        return shapely.Polygon(vtxs_xf)
+
 class GeomCorner(Enum):
     BOTTOMLEFT = auto()
     BOTTOMRIGHT = auto()
@@ -994,6 +1037,11 @@ def parse_symbol(pad: ODBFeaturePad, symbol: ODBSymbol, netname: str, scale=1e-3
         corners = [GeomCorner.BOTTOMRIGHT,GeomCorner.TOPRIGHT]
         symgeom = GeomSymbolRoundedRectangle(symbol.width*scale, symbol.height*scale,
                                              crad*scale,netname,corners,centered=True,transform=xf.copy())
+    
+    elif isinstance(symbol,ODBDiamondSymbol):
+        symgeom = GeomSymbolDiamond(symbol.width*scale, symbol.height*scale, 
+                                             netname,centered=True,transform=xf.copy())
+    
     elif isinstance(symbol,ODBUserSymbol):
         symgeoms = _parse_user_symbol(pad, symbol)
         return symgeoms
@@ -1010,9 +1058,9 @@ def parse_layer_geom(layer: ODBLayer, user_sym_dict, edadata: ODB_EDA_Data, elec
 
     # make subtraces
     subtraces = {}  # netname : list[subtraces]
-    skip_trace = False
     for symnum, sgs in layer_symbol_subgraphs.items():
         for sg in sgs:
+            skip_trace = False
             netname = sg.graph['netname']
             if electrical_only:
                 if netname == '$NONE$':
@@ -1129,11 +1177,12 @@ class ODBArchive:
         self._drill_shapelys = None
         for layer in self.odbconf.matrix.matrix_layers:
             if layer.layertype in SIMULATION_LAYER_TYPES:
-                print(f'\tLayer: {layer.name.lower()}')
-                self.layernames.append(layer.name.lower())  # lower() because matrix tends to change capitalization
-                self.layers[layer.name.lower()] = ODBLayer(self.odbconf,layer.name.lower(),self.user_sym_dict)
-                if layer.name.lower() not in ['comp_+_top','comp_+_bot']:
-                    self.geoms_on_layer[layer.name.lower()] = parse_layer_geom(self.layers[layer.name.lower()],self.user_sym_dict,self.edadata,electrical_only)
+                lname = layer.name.lower()
+                print(f'\tLayer: {lname}')
+                self.layernames.append(lname)  # lower() because matrix tends to change capitalization
+                self.layers[lname] = ODBLayer(self.odbconf,layer.name.lower(),self.user_sym_dict)
+                if lname not in ['comp_+_top','comp_+_bot']:
+                    self.geoms_on_layer[lname] = parse_layer_geom(self.layers[lname],self.user_sym_dict,self.edadata,electrical_only)
                 else:
                     # geoms on layer requires parsing packages
                     pass
@@ -1155,22 +1204,25 @@ class ODBArchive:
         self.geoms_on_layer[layername.lower()] = parse_layer_geom(self.layers[layername.lower()],
                                                                   self.user_sym_dict,self.edadata,electrical_only=False)
     
-    def render_layer(self,layername,ax=None,**patchkwargs):
+    def render_layer(self,layername,ax=None,subtract_drill=True,**patchkwargs):
         if layername not in self.layernames:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
         # Get geometry
-        layer_shapelys = [gg.to_shapely() for gg in self.geoms_on_layer[layername]]
+        layer_shapelys = self.get_layer_shapelys(layername,do_union=True,subtract_drill=subtract_drill)
         # Plot
         if ax is None:
             fig,ax = plt.subplots(1,1,figsize=(7,7))
             ax.set_aspect('equal')
             ax.set_box_aspect(1)
         big_union = shapely.disjoint_subset_union_all(layer_shapelys)
-        for buf in big_union.geoms:
-            plot_shapely_as_patch(buf,ax,**patchkwargs)
+        if isinstance(big_union,shapely.Polygon):
+            plot_shapely_as_patch(big_union,ax,**patchkwargs)
+        else:
+            for buf in big_union.geoms:
+                plot_shapely_as_patch(buf,ax,**patchkwargs)
         ax.autoscale()
     
-    def get_layer_shapelys(self,layername,do_union=True,subtract_drill=True):
+    def get_layer_shapelys(self,layername,do_union=True,subtract_drill=False):
         """Call to_shapely() on all geometries on layer and optionally union them."""
         if layername not in self.layernames:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
@@ -1180,11 +1232,11 @@ class ODBArchive:
             layer_shapelys = shapely.disjoint_subset_union_all(layer_shapelys)
         else:
             layer_shapelys = shapely.MultiPolygon(layer_shapelys)
-        if subtract_drill:
+        if subtract_drill and do_union:
             if self._drill_shapelys is not None:
                 layer_shapelys = layer_shapelys - self._drill_shapelys
             else:
-                print("Warning: subtract_drill specific but no drill shapes loaded.")
+                print("Warning: subtract_drill specified but no drill shapes loaded.")
         return layer_shapelys
     
     def _get_shapely_cad(self,polygon,thickness,z_offset:float=0.0, in_to_mm=True):
