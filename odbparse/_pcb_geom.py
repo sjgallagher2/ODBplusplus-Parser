@@ -22,7 +22,7 @@ import cadquery as cq
 # Module
 from ._coordinate2 import Coordinate2
 # matrix
-from ._odbparse import ODBLayerMatrixType,SIMULATION_LAYER_TYPES
+from ._odbparse import ODBLayerMatrixType,SIMULATION_LAYER_TYPES,COPPER_LAYER_TYPES
 # features
 from ._odbparse import ODBPolygonType,ODBPolygon,ODBFeatureSurface,ODBFeatureLine,ODBFeatureArc,ODBPolyCurve,ODBFeaturePadOrientation,ODBFeaturePad
 # symbols
@@ -1159,6 +1159,10 @@ def plot_shapely_as_patch(polygon,ax=None,**patchkwargs):
 
 
 class ODBArchive:
+    """
+    Top level ODB++ archive class.
+    It's a bit hacky but it gets the job done and performance isn't an issue.
+    """
     def __init__(self,root_name,electrical_only=True):
         self.root_p = Path(root_name)
         
@@ -1196,7 +1200,55 @@ class ODBArchive:
         self.layers['profile'] = profile
         self.layernames.append('profile')
         self.geoms_on_layer['profile'] = parse_layer_geom(self.layers['profile'],self.user_sym_dict,self.edadata,electrical_only=False)
-        print("ODB archive loaded.")
+        
+        self.recalculate_stackup()
+        
+        print("ODB++ archive loaded.")
+    
+    def recalculate_stackup(self):
+        # Get layer order and stackup info
+        layernames = []
+        layerrows = []
+        for name,layer in self.layers.items():
+            if layer.layertype in COPPER_LAYER_TYPES:
+                layernames.append(name)
+                layerrows.append(layer.matrixrow)
+        layeridxs = np.argsort(layerrows)  # get stackup-order of layers, top to bottom
+        # layer order from top to bottom
+        self.copper_layer_order = list(np.take(layernames,layeridxs))
+        
+        # Get layer stackup
+        top_thickness = np.around(self.layers[self.copper_layer_order[0]].thickness,6)
+        bottom_thickness = np.around(self.layers[self.copper_layer_order[-1]].thickness,6)
+        # get total board thickness
+        board_thickness = 0.0
+        for name in self.copper_layer_order[:-1]:  # exclude bottom
+            layer = self.layers[name]
+            board_thickness += (layer.thickness + layer.dielectric_thickness)
+        board_thickness += bottom_thickness  # only add bottom copper thickness,
+        board_thickness = np.around(board_thickness,6)  # round to 0.001 mil
+        # refine board thickness
+        if self.odbconf.board_thickness != board_thickness:
+            if self.odbconf.board_thickness > board_thickness*3:
+                print(f"NOTE: ODB++ archive board thickness was {self.odbconf.board_thickness*1e3}mil but layer stackup gives {np.around(board_thickness*1e3,6)}mil. Using ODB++ archive value.")
+                board_thickness = self.odbconf.board_thickness
+            else:
+                print(f"NOTE: ODB++ archive board thickness was {self.odbconf.board_thickness*1e3}mil but layer stackup gives {np.around(board_thickness*1e3,6)}mil. Using layer stackup value.")
+                self.odbconf.board_thickness = board_thickness
+        self.layers['profile'].thickness = board_thickness - top_thickness - bottom_thickness
+        # repeat and get z_offset for each copper layer
+        self.layer_zoffsets = {}
+        # z_offset is top of board, then we subtract layer copper, use that as the z_offset of the
+        # layer, then subtract the dielectric thickness to get ready for the next layer
+        z_offset = self.odbconf.board_thickness
+        for name in self.copper_layer_order:
+            layer = self.layers[name]
+            z_offset = np.around(z_offset - layer.thickness, 6)
+            # copper layer z_offset is bottom plane of copper layer
+            self.layer_zoffsets[name] = z_offset
+            z_offset -= layer.dielectric_thickness
+        # add profile even though it's not copper
+        self.layer_zoffsets['profile'] = self.layers[self.copper_layer_order[-1]].thickness  # thickness of bottom layer
     
     def load_layer(self,layername):
         self.layernames.append(layername.lower())
@@ -1209,6 +1261,16 @@ class ODBArchive:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
         # Get geometry
         layer_shapelys = self.get_layer_shapelys(layername,do_union=True,subtract_drill=subtract_drill)
+        
+        SpringGreen4 = (0.,0.55,0.27)
+        Gold1 = (1.,0.843,0)
+        if layername == 'profile':
+            if 'color' not in patchkwargs:
+                patchkwargs['color']=SpringGreen4
+        elif self.layers[layername].layertype in COPPER_LAYER_TYPES:
+            if 'color' not in patchkwargs:
+                patchkwargs['color']=Gold1
+        
         # Plot
         if ax is None:
             fig,ax = plt.subplots(1,1,figsize=(7,7))
@@ -1221,8 +1283,8 @@ class ODBArchive:
             for buf in big_union.geoms:
                 plot_shapely_as_patch(buf,ax,**patchkwargs)
         ax.autoscale()
-    
-    def get_layer_shapelys(self,layername,do_union=True,subtract_drill=False):
+
+    def get_layer_shapelys(self,layername,do_union=True,subtract_drill=True):
         """Call to_shapely() on all geometries on layer and optionally union them."""
         if layername not in self.layernames:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
@@ -1299,10 +1361,10 @@ class ODBArchive:
             return cadpoly
             print("Success")
     
-    def _get_copper_layer_cad(self,layername,z_offset: float = 0.0, in_to_mm=True):
+    def _get_copper_layer_cad(self,layername,z_offset: float = 0.0, in_to_mm=True, subtract_drill=False):
         if layername not in self.layernames:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
-        layer_shapelys = self.get_layer_shapelys(layername,do_union=True)
+        layer_shapelys = self.get_layer_shapelys(layername,do_union=True,subtract_drill=subtract_drill)
         cadpolys = []
         
         if isinstance(layer_shapelys,shapely.Polygon):
@@ -1322,12 +1384,13 @@ class ODBArchive:
                     cadpolys.append(cadpoly)
         return cadpolys
     
-    def _get_profile_cad(self,z_offset:float=0.0,in_to_mm=True):
+    def _get_profile_cad(self,z_offset:float=0.0,in_to_mm=True,subtract_drill=False):
         if 'profile' not in self.layernames:
             raise ValueError(f"Could not find profile in layers. Known layers: {self.layernames}")
-        layer_shapelys = self.get_layer_shapelys('profile',do_union=True)
+        layer_shapelys = self.get_layer_shapelys('profile',do_union=True,subtract_drill=subtract_drill)
         cadpolys = []
-        thickness = self.odbconf.board_thickness
+        thickness = self.layers['profile'].thickness
+        
         cadpoly = self._get_shapely_cad(layer_shapelys,thickness,z_offset=z_offset,in_to_mm=in_to_mm)
         if cadpoly is not None:
             cadpolys.append(cadpoly)
@@ -1349,17 +1412,20 @@ class ODBArchive:
                 
         return cadpolys
     
-    def export_layer_step(self,layername,z_offset: float = 0.0, in_to_mm=True):
+    def export_layer_step(self,layername,z_offset: float = 0.0, subtract_drill=False, in_to_mm=True):
         if layername not in self.layernames:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
         layertype = self.layers[layername].layertype
         
+        assycolor = None
         if layertype in [ODBLayerMatrixType.POWER_GROUND,
                          ODBLayerMatrixType.SIGNAL,
                          ODBLayerMatrixType.MIXED]:
-            cadpolys = self._get_copper_layer_cad(layername,z_offset,in_to_mm)
+            cadpolys = self._get_copper_layer_cad(layername,z_offset,in_to_mm,subtract_drill)
+            assycolor = cq.Color('Gold1')
         elif layername == 'profile':
-            cadpolys = self._get_profile_cad(z_offset,in_to_mm)
+            cadpolys = self._get_profile_cad(z_offset,in_to_mm,subtract_drill)
+            assycolor = cq.Color('SpringGreen4')
         elif layertype == ODBLayerMatrixType.DRILL:
             cadpolys = self._get_drill_cad(layername,in_to_mm)
         elif layertype == ODBLayerMatrixType.ROUT:
@@ -1375,10 +1441,15 @@ class ODBArchive:
 
         print("Assembling...")
         assy = cq.Assembly()
+        assy.name = layername
+        
         for wp in cadpolys:
-            assy.add(wp)
+            if assycolor is not None:
+                assy.add(wp,color=assycolor)
+            else:
+                assy.add(wp)
         print("Assembly complete. Exporting to STEP...")
         step_path = self.root_p.parent/f'{self.root_p.name}_{layername}.step'
         assy.export(str(step_path))
-        print("Export complete.")
+        print(f"Export complete to path: {str(step_path)}")
 

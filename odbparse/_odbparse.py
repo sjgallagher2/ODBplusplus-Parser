@@ -10,7 +10,7 @@ from enum import Enum,auto
 from dataclasses import dataclass,field
 import re
 from typing import Optional
-from numpy import deg2rad,cos,sin,pi,tan
+from numpy import deg2rad,cos,sin,pi,tan,around
 import networkx as nx  # graph library for mapping nets to lines
 import matplotlib as mpl
 
@@ -122,6 +122,7 @@ class ODBLayerMatrixType(Enum):
     CONDUCTIVE_PASTE = auto()
 
 SIMULATION_LAYER_TYPES = [ODBLayerMatrixType.COMPONENT,ODBLayerMatrixType.SIGNAL,ODBLayerMatrixType.POWER_GROUND,ODBLayerMatrixType.MIXED,ODBLayerMatrixType.DIELECTRIC,ODBLayerMatrixType.DRILL]
+COPPER_LAYER_TYPES = [ODBLayerMatrixType.SIGNAL,ODBLayerMatrixType.POWER_GROUND,ODBLayerMatrixType.MIXED]
 
 class ODBLayerMatrixPolarity(Enum):
     POSITIVE=auto()
@@ -1671,7 +1672,7 @@ class ODBFeatureBarcode(ODBFeatureBase):
     pass
 
 
-class ODBFeatureFile:
+class ODBFeaturesFile:
     """
     Represents a file containing features. 
     
@@ -1818,7 +1819,7 @@ class ODBUserSymbol(ODBSymbol):
         self.name = name
         self.featpath = featpath
         self.odbconf = odbconf
-        self.featfile = ODBFeatureFile(featpath,self.odbconf)
+        self.featfile = ODBFeaturesFile(featpath,self.odbconf)
 
 def load_user_symbols(odbconf: ODBConfig):
     print("Loading user symbols... ",end='')
@@ -1921,7 +1922,8 @@ class ODBComponentRecord:
     attrs: list[str]
     
     @classmethod
-    def parse(cls,line,attrnames):
+    def parse(cls,line,attrnames,attrstrs):
+        # TODO parse attrstrs if available
         if line[0] != 'CMP':
             raise ValueError(f"Got unexpected record type {line[0]}, expected CMP.")
         pkg_ref = int(line[1])
@@ -2029,14 +2031,45 @@ class ODBComponentPropertyRecord:
 
 
 class ODBComponent:
+    """
+    Class for ODB++ Components, including a package reference, a location/rotation/mirror, a name (ref des),
+    attributes (like component height), properties (like component value), and toeprints (pin numbers, their 
+    nets and subnets).
+    
+    Components are separate from the copper layout (which has its own pins, pads, etc) and provides
+    assembly-style data about component placement, rather than plain geometry. 
+    
+    The package reference can be looked up in ODB_EDA_Data using edadata.package_number_name_lookup[pkg_ref]
+    to go from reference number to name, and edadata.packages[pkg_name] to get the ODB_EDA_Package object itself.
+    """
     def __init__(self,comp_rec: ODBComponentRecord,
                  toeprint_recs: list[ODBComponentToeprintRecord],
                  prop_recs: list[ODBComponentPropertyRecord]):
+        # base data
         self.component_record = comp_rec
         self.toeprint_records = toeprint_recs
         self.property_records = prop_recs
+        
+        # parse out records, claim their data for ourselves!
+        self.refdes = self.component_record.name 
+        self.loc = self.component_record.loc
+        self.pkg_ref = self.component_record.pkg_ref
+        self.rot_deg = self.component_record.rot_deg
+        self.mirror = self.component_record.mirror 
+        self.attrs = self.component_record.attrs
+        self.num_pins = len(self.toeprint_records)
+        self.properties = {}
+        self.value = None
+        for proprec in self.property_records:
+            self.properties[proprec.name] = proprec.value
+            if proprec.name == 'VALUE':
+                self.value = proprec.value
+    
+    def __repr__(self):
+        return f'ODBComponent(refdes={self.refdes},value={self.value},pkg_ref={self.pkg_ref},loc={self.loc},rot_deg={self.rot_deg},mirror={self.mirror},num_pins={self.num_pins},{len(self.properties)} properties,{len(self.attrs)} attributes)'
 
-class ODBComponentFile:
+class ODBComponentsFile:
+    """Class for representing the `components` file of a layer. See also ODBFeaturesFile"""
     def __init__(self,root: Path):
         self.comp_path = root/'components'
         lines = None
@@ -2071,8 +2104,8 @@ class ODBComponentFile:
                     # Finish
                     comp = ODBComponent(active_comp_rec,active_top_recs,active_prop_recs)
                     self.components[active_comp_rec.name] = comp
-                rec = ODBComponentRecord.parse(rectxt,self.attrnames)
-                active_comp_rec = None
+                rec = ODBComponentRecord.parse(rectxt,self.attrnames,self.attrstrs)
+                active_comp_rec = rec
                 active_top_recs = []
                 active_prop_recs = []
             elif rectxt[0] == 'TOP':
@@ -2134,9 +2167,9 @@ class ODBLayer:
             raise ValueError(f"Could not find layer with name {layername}. Known layers: {mat_layernames}; layer root paths: {layer_path_names}")
         
         if is_toplevel:
-            self.featfile = ODBFeatureFile(self.layer_root_path/layername, self.odbconf)
+            self.featfile = ODBFeaturesFile(self.layer_root_path/layername, self.odbconf)
         else:
-            self.featfile = ODBFeatureFile(self.layer_root_path/'features', self.odbconf)
+            self.featfile = ODBFeaturesFile(self.layer_root_path/'features', self.odbconf)
         
         # Add user symbols to featfile
         if len(user_sym_dict) > 0:
@@ -2161,16 +2194,20 @@ class ODBLayer:
         self.bulk_resistivity = self.attrdict.get('.bulk_resistivity')  # in nano-ohm.meter, 0-10000
         # Dielectric attributes
         self.dielectric_constant = self.attrdict.get('.dielectric_constant')
-        self.layer_dielectric = self.attrdict.get('.layer_dielectric')  # thickness of dielectric material
+        self.dielectric_thickness = self.attrdict.get('.layer_dielectric')  # thickness of dielectric material
         self.loss_tangent = self.attrdict.get('.loss_tangent')  # loss tangent, 0-100
         # Other attributes
         self.z0impedance = self.attrdict.get('.z0impedance')  # typical characteristic impedance required for a layer
         # Try to calculate layer thickness
         self.thickness = 0.0
         if self.copper_weight is not None:
-            self.thickness = self.copper_weight*1.37e-3  # convert oz cu to mils, or use microns
-        elif self.layer_dielectric is not None:
-            self.thickness = self.layer_dielectric  # thickness of dielectric on which copper sits, only if we don't get copper thickness
+            # convert oz cu to mils, or use microns
+            # use IPC-4562A nominal thickness of 1oz cu (1.35 mil)
+            # and assume 0.3 mil is etched during fab (typical)
+            # see e.g. https://www.saturnelectronics.com/technology_hub/heavy_copper_resource_center/cu_trace_thickness.php
+            self.thickness = around(self.copper_weight*1.35e-3 - 0.3e-3,5)
+        elif self.dielectric_thickness is not None:
+            self.thickness = self.dielectric_thickness  # thickness of dielectric on which copper sits, only if we don't get copper thickness
         if self.name.lower() == 'profile':
             self.thickness = self.odbconf.board_thickness
         
@@ -2203,9 +2240,9 @@ class ODBLayer:
             self.thickness = self.odbconf.board_thickness  # TODO Only through-drills accepted for now, not blind or buried
         
         # Parse components if available
-        self.component_file = None
+        self.compfile = None
         if self.layertype == ODBLayerMatrixType.COMPONENT:
-            self.component_file = ODBComponentFile(self.layer_root_path)
+            self.compfile = ODBComponentsFile(self.layer_root_path)
             self.thickness = 0
         
         # Generate a graph for this layer
