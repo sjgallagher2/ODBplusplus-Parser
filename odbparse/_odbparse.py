@@ -355,7 +355,7 @@ class ODBMatrix:
         Layer info from /matrix/matrix
         """
         context: ODBLayerMatrixContext|None = None
-        layertype: ODBLayerMatrixType|None = None
+        type: ODBLayerMatrixType|None = None
         name: str = ''
         old_name: str = ''
         dielectric_name: str = ''
@@ -389,7 +389,7 @@ class ODBMatrix:
             if ldict.get('CONTEXT') is not None:
                 self.context = ODBLayerMatrixContext[ldict.get('CONTEXT')]
             if ldict.get('TYPE') is not None:
-                self.layertype = ODBLayerMatrixType[ldict.get('TYPE')]
+                self.type = ODBLayerMatrixType[ldict.get('TYPE')]
             if ldict.get('POLARITY') is not None:
                 self.polarity = ODBLayerMatrixPolarity[ldict.get('POLARITY')]
             if ldict.get('FORM') is not None:
@@ -1134,7 +1134,7 @@ ODBSYMBOL_CLASSES = [                               # IMPLEMENTED
     ODBChamferedRectangleSymbol,                    # -
     ODBOvalSymbol,                                  # X
     ODBHalfOvalSymbol,                              # X
-    ODBDiamondSymbol,                               # -
+    ODBDiamondSymbol,                               # X
     ODBOctagonSymbol,                               # -
     ODBRoundDonutSymbol,                            # -
     ODBSquareDonutSymbol,                           # -
@@ -2117,6 +2117,11 @@ class ODBComponentsFile:
             else:
                 raise ValueError(f"Unknown record type: {rec}")
             self.recs.append(rec)
+        
+        if active_comp_rec is not None:
+            # Finish last component
+            comp = ODBComponent(active_comp_rec,active_top_recs,active_prop_recs)
+            self.components[active_comp_rec.name] = comp
             
 
 class ODBLayer:
@@ -2212,7 +2217,7 @@ class ODBLayer:
             self.thickness = self.odbconf.board_thickness
         
         # Load useful attributes from matrix layer info
-        self.layertype: ODBLayerMatrixType|None = None
+        self.type: ODBLayerMatrixType|None = None
         self.dielectric_name: str = ''
         self.dielectric_type: ODBLayerMatrixDielectricType|None = None
         self.cu_top: str = ''
@@ -2224,7 +2229,7 @@ class ODBLayer:
         self.add_type: ODBLayerMatrixLayerRoutSubtype|ODBLayerMatrixLayerDrillSubtype|ODBLayerMatrixLayerConductivePasteSubtype|ODBLayerMatrixLayerDocumentSubtype|ODBLayerMatrixLayerMaskSubtype|ODBLayerMatrixLayerMixedSubtype|ODBLayerMatrixLayerPowerGroundSubtype|ODBLayerMatrixLayerSignalSubtype|ODBLayerMatrixLayerSolderMaskSubtype|None = None
         self.color: str = ''
         if self.matrix_layer is not None:
-            self.layertype = self.matrix_layer.layertype
+            self.type = self.matrix_layer.type
             self.dielectric_name = self.matrix_layer.dielectric_name
             self.dielectric_type = self.matrix_layer.dielectric_type
             self.matrixrow = self.matrix_layer.row 
@@ -2236,12 +2241,12 @@ class ODBLayer:
             self.add_type = self.matrix_layer.add_type 
             self.color = self.matrix_layer.color
         
-        if self.layertype == ODBLayerMatrixType.DRILL:
+        if self.type == ODBLayerMatrixType.DRILL:
             self.thickness = self.odbconf.board_thickness  # TODO Only through-drills accepted for now, not blind or buried
         
         # Parse components if available
         self.compfile = None
-        if self.layertype == ODBLayerMatrixType.COMPONENT:
+        if self.type == ODBLayerMatrixType.COMPONENT:
             self.compfile = ODBComponentsFile(self.layer_root_path)
             self.thickness = 0
         
@@ -2608,14 +2613,38 @@ class ODB_EDA_PropertyRecord(ODB_EDA_Record):
         return f'ODB_EDA_PropertyRecord(name={self.name},value_str={self.value_str},numbers={self.numbers})'
 
 
+class ODB_EDA_PinType(Enum):
+    THRUHOLE = auto()
+    BLIND = auto()
+    SURFACE = auto()
+    
+    @classmethod
+    def parse(cls,char):
+        if char not in ['T','B','S']:
+            raise ValueError(f"Got unexpected character {char}, expected one of ['T','B','S']")
+        if char == 'T':
+            return cls.THRUHOLE
+        elif char == 'B':
+            return cls.BLIND 
+        elif char == 'S':
+            return cls.SURFACE
+
 class ODB_EDA_Pin:
     def __init__(self,pin_record: ODB_EDA_PinRecord,
                  outline_record: ODB_EDA_CircleRecord|ODB_EDA_SquareRecord|ODB_EDA_RectangleRecord|ODB_EDA_ContourRecord):
         self.record = pin_record 
-        self.outline_record = outline_record
+        self.outline = outline_record
+        
+        # Parse out useful attributes from records
+        self.name = self.record.name
+        self.pos = Coordinate2(self.record.xc, self.record.yc)
+        self.electrical_type = self.record.etype  # ODB_EDA_PinElectricalType
+        self.mount_type = self.record.mtype       # ODB_EDA_PinMountTypes
+        self.finished_hole_size = self.record.fhs
+        self.type = ODB_EDA_PinType.parse(self.record.pintype) # thru-hole, blind, or surface
     
     def __repr__(self):
-        return f'ODB_EDA_Pin(record={self.record},outline_record={self.outline_record})'
+        return f'ODB_EDA_Pin(name={self.name},type={self.type},outline={self.outline},pos={self.pos},electrical_type={self.electrical_type},mount_type={self.mount_type},finished_hole_size={self.finished_hole_size})'
 
 class ODB_EDA_Package:
     def __init__(self,pkg_record: ODB_EDA_PackageRecord, 
@@ -2849,6 +2878,11 @@ class ODB_EDA_Data:
                     raise ValueError(f"Parse failed, pin overlaps with another pin? Record #{i}.")
                 active_pin = i 
         
+        if active_pkg != -1:
+            # last package has no record after it
+            self.packages[self.recs[active_pkg].name] = ODB_EDA_Package(self.recs[active_pkg],pkg_outline_rec,pkg_props,pkg_pins,pkg_num)
+            self.package_number_name_lookup[pkg_num] = self.recs[active_pkg].name
+        
         print("Loading feature lookup...")
         self.feat_netname_on_layer = {}         # layer name : dict[feature number : netname]
         # self.subnet_of_featnum_on_layer = {}    # layer name : dict[feature number : subnet]
@@ -3027,16 +3061,16 @@ def load_ODB(root_p: Path,verbose = True) -> ODBConfig:
     if verbose:
         print("Signal, power, and dielectric layers:")
     for layer in matrix.matrix_layers:
-        if layer.layertype in SIMULATION_LAYER_TYPES:
+        if layer.type in SIMULATION_LAYER_TYPES:
             if verbose:
-                print(f'\t{layer.row} - {layer.name} ({layer.layertype.name}) in context {layer.context.name}')
+                print(f'\t{layer.row} - {layer.name} ({layer.type.name}) in context {layer.context.name}')
     
     if verbose:
         print("Other layers:")
     for layer in matrix.matrix_layers:
-        if layer.layertype not in SIMULATION_LAYER_TYPES:
+        if layer.type not in SIMULATION_LAYER_TYPES:
             if verbose:
-                print(f'\t{layer.row} - {layer.name} ({layer.layertype.name}) in context {layer.context.name}')
+                print(f'\t{layer.row} - {layer.name} ({layer.type.name}) in context {layer.context.name}')
     
     
     # 3. Parse info file for ODB version

@@ -27,6 +27,8 @@ from ._odbparse import ODBLayerMatrixType,SIMULATION_LAYER_TYPES,COPPER_LAYER_TY
 from ._odbparse import ODBPolygonType,ODBPolygon,ODBFeatureSurface,ODBFeatureLine,ODBFeatureArc,ODBPolyCurve,ODBFeaturePadOrientation,ODBFeaturePad
 # symbols
 from ._odbparse import ODBSymbol,ODBRoundSymbol,ODBSquareSymbol,ODBRectangleSymbol,ODBRoundedRectangleSymbol,ODBOvalSymbol,ODBHalfOvalSymbol,ODBUserSymbol,ODBDiamondSymbol
+# packages
+from ._odbparse import ODB_EDA_Package,ODB_EDA_Pin,ODB_EDA_CircleRecord,ODB_EDA_SquareRecord,ODB_EDA_RectangleRecord,ODB_EDA_ContourRecord
 # higher level
 from ._odbparse import ODBLayer,load_ODB,load_user_symbols,ODB_EDA_Data
 
@@ -551,7 +553,11 @@ class GeomSymbolRound(GeomSymbol):
         super().__init__(netname)
         self.diameter = diameter
         self.transform = transform or GeomSymbolTransform()
-        
+    
+    def apply_transform(self,xf: GeomSymbolTransform):
+        xf = xf.copy()
+        self.transform.cascade(xf)
+    
     def to_mpl(self, spline=False, resolution=10, **patchkwargs) -> mpl.patches.CirclePolygon:
         rad = self.diameter*self.transform.get_scale()/2.
         if spline:
@@ -581,6 +587,10 @@ class GeomSymbolRectangle(GeomSymbol):
         self.height = height
         self.centered = centered
         self.transform = transform or GeomSymbolTransform()
+    
+    def apply_transform(self,xf: GeomSymbolTransform):
+        xf = xf.copy()
+        self.transform.cascade(xf)
     
     def _get_vertices(self):
         if self.centered:
@@ -624,6 +634,10 @@ class GeomSymbolDiamond(GeomSymbol):
         self.height = height
         self.centered = centered
         self.transform = transform or GeomSymbolTransform()
+    
+    def apply_transform(self,xf: GeomSymbolTransform):
+        xf = xf.copy()
+        self.transform.cascade(xf)
     
     def _get_vertices(self):
         if self.centered:
@@ -752,7 +766,11 @@ class GeomSymbolRoundedRectangle(GeomSymbol):
             self.oval = True
         elif self.corner_radius > smallest_dim/2.:
             raise ValueError(f"Corner radius {self.corner_radius} is larger than half the smallest side, {smallest_dim/2.}.")
-        
+    
+    def apply_transform(self,xf: GeomSymbolTransform):
+        xf = xf.copy()
+        self.transform.cascade(xf)
+    
     def _get_vertices(self):
         if self.centered:
             corner_vtxs = [
@@ -859,6 +877,10 @@ class GeomSimplePolygon:
     polarity: GeomPolygonPolarity = GeomPolygonPolarity.POSITIVE
     transform: GeomSymbolTransform = field(default_factory=GeomSymbolTransform)
     
+    def apply_transform(self,xf: GeomSymbolTransform):
+        xf = xf.copy()
+        self.transform.cascade(xf)
+    
     @classmethod
     def from_odb_polygon(cls,feat: ODBPolygon):
         # feat.bs         # start position
@@ -896,7 +918,7 @@ class GeomSimplePolygon:
         vtx_tuples = self.transform.apply(vtx_tuples)
         return vtx_tuples
     
-    def to_mpl(self,**patchkwargs) -> mpl.patches.PathPatch:
+    def to_mpl(self,path_only=False,**patchkwargs) -> mpl.patches.PathPatch:
         prev_pt = None
         all_vtxs = []
         all_codes = []
@@ -909,6 +931,9 @@ class GeomSimplePolygon:
             all_codes += codes
             prev_pt = vtxs[-1]
         all_vtxs = self.transform.apply(all_vtxs)
+        if path_only:
+            return mpl.path.Path(all_vtxs,all_codes)
+        #else
         patch = mpl.patches.PathPatch(mpl.path.Path(all_vtxs,all_codes),**patchkwargs)
         return patch
     
@@ -934,14 +959,39 @@ class GeomPolygon:
         self.holes = holes
         self.netname = netname or '$NONE$'
     
+    def apply_transform(self,xf: GeomSymbolTransform):
+        xf = xf.copy()
+        self.shell.transform.cascade(xf)
+        for hole in self.holes:
+            hole.transform.cascade(xf)
+    
     def to_shapely(self):
         shell_ls = self.shell.to_shapely()
         holes_ls = []
         for hole in self.holes:
             holes_ls.append(hole.to_shapely())
         return shapely.Polygon(shell_ls,holes_ls)
+    
+    def to_mpl(self,**patchkwargs):
+        shell_path = self.shell.to_mpl(path_only=True,**patchkwargs)
+        polypath_vtxs = shell_path.vertices
+        polypath_codes = shell_path.codes
+        polypath_vtxs = np.concatenate([polypath_vtxs,[[0.,0.]]])
+        polypath_codes = np.concatenate([polypath_codes,[mpl.path.Path.CLOSEPOLY]])
+        
+        for hole in self.holes:
+            holepath = hole.to_mpl(path_only=True,**patchkwargs)
+            polypath_vtxs = np.concatenate([polypath_vtxs,holepath.vertices])
+            polypath_codes = np.concatenate([polypath_codes,holepath.codes])
+            polypath_vtxs = np.concatenate([polypath_vtxs,[[0.,0.]]])
+            polypath_codes = np.concatenate([polypath_codes,[mpl.path.Path.CLOSEPOLY]])
+        
+        path = mpl.path.Path(polypath_vtxs,polypath_codes)
+        patch = mpl.patches.PathPatch(path,**patchkwargs)
+        return patch
+        
 
-# NOTE: Copy the transform before using it
+# NOTE: Copy the transform before using it, with .copy()
 pad_transform_lookup = {
     ODBFeaturePadOrientation.DEG0_NOMIRROR      :GeomSymbolTransform(),
     ODBFeaturePadOrientation.DEG90_NOMIRROR     :GeomSymbolTransform(rot_deg=90),
@@ -955,7 +1005,7 @@ pad_transform_lookup = {
     ODBFeaturePadOrientation.DEGANY_XMIRROR     :GeomSymbolTransform(mirror_x=True)
     }
 def get_pad_transform(pad: ODBFeaturePad):
-    """Get pad transform WITHOUT translation"""
+    """Get pad transform with translation"""
     transform = pad_transform_lookup[pad.orient_def].copy()  # initialize, then update
     if pad.rot_deg is not None:
         tf2 = GeomSymbolTransform(scale=pad.resize_factor,rot_deg=pad.rot_deg,translate_x=pad.p1.x,translate_y=pad.p1.y)
@@ -964,12 +1014,59 @@ def get_pad_transform(pad: ODBFeaturePad):
     transform.cascade(tf2)
     return transform
 
+
+def parse_eda_outline(outline: ODB_EDA_CircleRecord|ODB_EDA_SquareRecord|ODB_EDA_RectangleRecord|ODB_EDA_ContourRecord):
+    """Parse an outline record for an EDA package or pin, ignore package and pin transformations"""
+    if isinstance(outline,ODB_EDA_CircleRecord):
+        #outline.c 
+        #outline.radius 
+        xf = GeomSymbolTransform(translate_x=outline.c.x,translate_y=outline.c.y)
+        return GeomSymbolRound(outline.radius*2,'',xf)
+    elif isinstance(outline,ODB_EDA_SquareRecord):
+        xf = GeomSymbolTransform(translate_x=outline.c.x,translate_y=outline.c.y)
+        return GeomSymbolRectangle(outline.halfside*2, outline.halfside*2, '',centered=True,transform=xf)
+    elif isinstance(outline,ODB_EDA_RectangleRecord):
+        # NOTE: Unlike Square and Circle outlines, outline.p0 is the bottom left corner, not the center
+        xf = GeomSymbolTransform(translate_x=outline.p0.x,translate_y=outline.p0.y)
+        return GeomSymbolRectangle(outline.width, outline.height, '',centered=False,transform=xf)
+    elif isinstance(outline,ODB_EDA_ContourRecord):
+        shell_poly = None
+        hole_polys = []
+        for poly in outline.polygons:
+            if poly.poly_type == ODBPolygonType.ISLAND:
+                if shell_poly is not None:
+                    print("WARNING: More than one island for surface!")
+                shell_poly = GeomSimplePolygon.from_odb_polygon(poly)
+                # Update polygon transform
+                # shell_poly.transform.cascade(xf)
+            else:
+                hole_poly = GeomSimplePolygon.from_odb_polygon(poly)
+                # Update polygon transform
+                # hole_poly.transform.cascade(xf)
+                hole_polys.append(hole_poly)
+                
+        return GeomPolygon(shell_poly,hole_polys,'')
+    else:
+        raise ValueError(f"Unknown outline record type {outline}")
+
+
+def get_pkg_outlines(pkg,pkg_xf):
+    pkg_outline = parse_eda_outline(pkg.outline_record)
+    pkg_outline.apply_transform(pkg_xf)
+    pkg_outlines = [pkg_outline]
+    for pin in pkg.pins:
+        po = parse_eda_outline(pin.outline)
+        po.apply_transform(pkg_xf)
+        pkg_outlines.append(po)
+    return pkg_outlines
+
+
 def parse_symbol(pad: ODBFeaturePad, symbol: ODBSymbol, netname: str, scale=1e-3):
     def _parse_user_symbol(usersympad: ODBFeaturePad,usersym: ODBSymbol):
         """
         Parse a user symbol into Geom types.
         
-        User symbols are defined by their own `feature` files with features centered at
+        User symbols are defined by their own `features` files with features centered at
         the origin. We will convert these to a list of polygons and translate them to our
         user-symbol-based pad position
         
@@ -1180,7 +1277,7 @@ class ODBArchive:
         self.geoms_on_layer = {}
         self._drill_shapelys = None
         for layer in self.odbconf.matrix.matrix_layers:
-            if layer.layertype in SIMULATION_LAYER_TYPES:
+            if layer.type in SIMULATION_LAYER_TYPES:
                 lname = layer.name.lower()
                 print(f'\tLayer: {lname}')
                 self.layernames.append(lname)  # lower() because matrix tends to change capitalization
@@ -1191,7 +1288,7 @@ class ODBArchive:
                     # geoms on layer requires parsing packages
                     pass
                 
-            if layer.layertype == ODBLayerMatrixType.DRILL:
+            if layer.type == ODBLayerMatrixType.DRILL:
                 # Add drill shapely
                 self._drill_shapelys = self.get_layer_shapelys(layer.name.lower(),do_union=False,subtract_drill=False)
         # Add top-level board profile
@@ -1210,7 +1307,7 @@ class ODBArchive:
         layernames = []
         layerrows = []
         for name,layer in self.layers.items():
-            if layer.layertype in COPPER_LAYER_TYPES:
+            if layer.type in COPPER_LAYER_TYPES:
                 layernames.append(name)
                 layerrows.append(layer.matrixrow)
         layeridxs = np.argsort(layerrows)  # get stackup-order of layers, top to bottom
@@ -1256,32 +1353,84 @@ class ODBArchive:
         self.geoms_on_layer[layername.lower()] = parse_layer_geom(self.layers[layername.lower()],
                                                                   self.user_sym_dict,self.edadata,electrical_only=False)
     
+    def _get_component_outlines(self,refdes: str,layer: ODBLayer|None=None):
+        if layer is None:
+            for layer in self.layers:
+                if layer.type == ODBLayerMatrixType.COMPONENT:
+                    if refdes in layer.compfile.components.keys():
+                        comp = layer.compfile.components[refdes]
+                        break
+        else:
+            comp = layer.compfile.components[refdes]
+        comp_xf = GeomSymbolTransform(translate_x=comp.loc.x,translate_y=comp.loc.y,rot_deg=comp.rot_deg,mirror_x=comp.mirror)
+        comp_pkg_name = self.edadata.package_number_name_lookup[comp.pkg_ref]
+        comp_pkg = self.edadata.packages[comp_pkg_name]
+        comp_outlines = get_pkg_outlines(comp_pkg,comp_xf)
+        return comp_outlines
+    
     def render_layer(self,layername,ax=None,subtract_drill=True,**patchkwargs):
         if layername not in self.layernames:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
         # Get geometry
-        layer_shapelys = self.get_layer_shapelys(layername,do_union=True,subtract_drill=subtract_drill)
+        if self.layers[layername].type != ODBLayerMatrixType.COMPONENT:
+            layer_shapelys = self.get_layer_shapelys(layername,do_union=True,subtract_drill=subtract_drill)
         
         SpringGreen4 = (0.,0.55,0.27)
         Gold1 = (1.,0.843,0)
+        White = (0.8,0.8,0.8)  # actually grey now
         if layername == 'profile':
             if 'color' not in patchkwargs:
                 patchkwargs['color']=SpringGreen4
-        elif self.layers[layername].layertype in COPPER_LAYER_TYPES:
+        elif self.layers[layername].type in COPPER_LAYER_TYPES:
             if 'color' not in patchkwargs:
                 patchkwargs['color']=Gold1
+        elif self.layers[layername].type == ODBLayerMatrixType.COMPONENT:
+            if 'color' not in patchkwargs:
+                patchkwargs['color']=White
         
         # Plot
         if ax is None:
             fig,ax = plt.subplots(1,1,figsize=(7,7))
             ax.set_aspect('equal')
             ax.set_box_aspect(1)
-        big_union = shapely.disjoint_subset_union_all(layer_shapelys)
-        if isinstance(big_union,shapely.Polygon):
-            plot_shapely_as_patch(big_union,ax,**patchkwargs)
+            
+        # Handle Component layers separately
+        if self.layers[layername].type == ODBLayerMatrixType.COMPONENT:
+            color = White
+            if 'fill' not in patchkwargs:
+                patchkwargs['fill'] = False
+            if 'linewidth' not in patchkwargs and 'lw' not in patchkwargs:
+                patchkwargs['lw'] = 2
+            if 'edgecolor' not in patchkwargs and 'ec' not in patchkwargs:
+                patchkwargs['ec'] = patchkwargs['color']
+            for refdes in self.layers[layername].compfile.components.keys():
+                outlines = self._get_component_outlines(refdes,self.layers[layername])
+                for po in outlines:
+                    ax.add_patch(po.to_mpl(**patchkwargs))
+                comp = self.layers[layername].compfile.components[refdes]
+                # Annotate refdes
+                annot = ax.annotate(
+                    refdes,
+                    xy=(comp.loc.x,comp.loc.y),
+                    xytext=(0,0),
+                    xycoords='data',
+                    textcoords='offset points',
+                    ha='center',
+                    va='center',
+                    annotation_clip=True,
+                    color=patchkwargs['color'],
+                    weight='bold'
+                    )
+                
+        
+        # Profile and copper layers
         else:
-            for buf in big_union.geoms:
-                plot_shapely_as_patch(buf,ax,**patchkwargs)
+            big_union = shapely.disjoint_subset_union_all(layer_shapelys)
+            if isinstance(big_union,shapely.Polygon):
+                plot_shapely_as_patch(big_union,ax,**patchkwargs)
+            else:
+                for buf in big_union.geoms:
+                    plot_shapely_as_patch(buf,ax,**patchkwargs)
         ax.autoscale()
 
     def get_layer_shapelys(self,layername,do_union=True,subtract_drill=True):
@@ -1415,10 +1564,10 @@ class ODBArchive:
     def export_layer_step(self,layername,z_offset: float = 0.0, subtract_drill=False, in_to_mm=True):
         if layername not in self.layernames:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
-        layertype = self.layers[layername].layertype
+        type = self.layers[layername].type
         
         assycolor = None
-        if layertype in [ODBLayerMatrixType.POWER_GROUND,
+        if type in [ODBLayerMatrixType.POWER_GROUND,
                          ODBLayerMatrixType.SIGNAL,
                          ODBLayerMatrixType.MIXED]:
             cadpolys = self._get_copper_layer_cad(layername,z_offset,in_to_mm,subtract_drill)
@@ -1426,18 +1575,18 @@ class ODBArchive:
         elif layername == 'profile':
             cadpolys = self._get_profile_cad(z_offset,in_to_mm,subtract_drill)
             assycolor = cq.Color('SpringGreen4')
-        elif layertype == ODBLayerMatrixType.DRILL:
+        elif type == ODBLayerMatrixType.DRILL:
             cadpolys = self._get_drill_cad(layername,in_to_mm)
-        elif layertype == ODBLayerMatrixType.ROUT:
+        elif type == ODBLayerMatrixType.ROUT:
             raise NotImplementedError("Routing layer not yet implemented.")
-        elif layertype == ODBLayerMatrixType.DIELECTRIC:
+        elif type == ODBLayerMatrixType.DIELECTRIC:
             raise NotImplementedError("Dielectric layer not yet implemented.")
-        elif layertype in [ODBLayerMatrixType.CONDUCTIVE_PASTE,
+        elif type in [ODBLayerMatrixType.CONDUCTIVE_PASTE,
                            ODBLayerMatrixType.MASK,
                            ODBLayerMatrixType.SILK_SCREEN,
                            ODBLayerMatrixType.SOLDER_MASK,
                            ODBLayerMatrixType.SOLDER_PASTE]:
-            raise NotImplementedError(f"Layer type {layertype} not yet implemented.")
+            raise NotImplementedError(f"Layer type {type} not yet implemented.")
 
         print("Assembling...")
         assy = cq.Assembly()
