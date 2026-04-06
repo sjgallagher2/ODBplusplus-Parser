@@ -2011,7 +2011,7 @@ class ODBComponentPropertyRecord:
     value: str
     prop_nums: list[str]
     
-    pattern = re.compile(r"PRP (?P<name>[^\s]+) \'(?P<value>[^\']+)\'\s?(?P<propnums>.*)")
+    pattern = re.compile(r"PRP (?P<name>[^\s]+) \'(?P<value>[^\']*)\'\s?(?P<propnums>.*)")
 
     @classmethod
     def parse(cls,line):
@@ -2082,6 +2082,10 @@ class ODBComponentsFile:
 
         # Load records
         i=0
+        if lines[0][0].startswith('UNITS'):
+            units = lines[0][0].split('=')[1]
+            # TODO doing nothing with this for now
+            i += 1
         self.attrnames = []  # attribute names, in order, zero-indexed
         self.attrstrs = []
         while lines[i][0].startswith('@'):
@@ -2108,15 +2112,17 @@ class ODBComponentsFile:
                 active_comp_rec = rec
                 active_top_recs = []
                 active_prop_recs = []
+                self.recs.append(rec)
             elif rectxt[0] == 'TOP':
                 rec = ODBComponentToeprintRecord.parse(rectxt)
                 active_top_recs.append(rec)
+                self.recs.append(rec)
             elif rectxt[0] == 'PRP':
                 rec = ODBComponentPropertyRecord.parse(rectxt)
                 active_prop_recs.append(rec)
+                self.recs.append(rec)
             else:
-                raise ValueError(f"Unknown record type: {rec}")
-            self.recs.append(rec)
+                raise ValueError(f"Unknown record type: {rectxt}")
         
         if active_comp_rec is not None:
             # Finish last component
@@ -2442,7 +2448,7 @@ class ODB_EDA_PackageRecord(ODB_EDA_Record):
         self.xmin = float(line[3])
         self.ymin = float(line[4])
         self.xmax = float(line[5])
-        self.ymax = float(line[6])
+        self.ymax = float(line[6].strip(';'))
         self.bounding_box = (self.xmin,self.ymin,self.xmax,self.ymax)
     def __repr__(self):
         return f'ODB_EDA_PackageRecord(name={self.name},pitch={self.pitch},xmin={self.xmin},ymin={self.ymin},xmax={self.xmax},ymax={self.ymax})'
@@ -3091,8 +3097,12 @@ def load_ODB(root_p: Path,verbose = True) -> ODBConfig:
             odb_ver_maj = iv.value 
         elif iv.name == 'ODB_VERSION_MINOR':
             odb_ver_min = iv.value 
+    if odb_ver_min >= 1.0:
+        # sometimes formatted as e.g. minor=1.0 instead of minor=0.1
+        ODB_VERSION = odb_ver_maj+0.1*odb_ver_min
+    else:
+        ODB_VERSION = odb_ver_maj+odb_ver_min
     
-    ODB_VERSION = odb_ver_maj+odb_ver_min
     if verbose:
         print(f"ODB VERSION: {ODB_VERSION}")
     if ODB_VERSION < 8:
@@ -3103,25 +3113,28 @@ def load_ODB(root_p: Path,verbose = True) -> ODBConfig:
     # if v8.0 the UNITS directive must be present
     if verbose:
         print("\nParsing attrlist file... ",end='')
-    attrlistfile = root_p/'misc/attrlist'""
-    attrlist_arrs,attrlist_vars = read_structured_text(attrlistfile)  # should only be vars
-    if verbose:
-        print("Done.")
-    
-    board_thickness = 0.
-    unit = ODB_UNIT
-    for alv in attrlist_vars:
+    attrlistfile = root_p/'misc/attrlist'
+    if attrlistfile.exists():
+        attrlist_arrs,attrlist_vars = read_structured_text(attrlistfile)  # should only be vars
         if verbose:
-            print(f'\t{alv.name}={alv.value}')
-        if alv.name == 'UNITS':  # only required for v8+
-            unit = ODBUnit[alv.value]
-        elif alv.name == '.board_thickness':
-            scale = get_unit_conversion(unit,ODB_UNIT)
-            board_thickness = float(alv.value)*scale
-    
-    if verbose:
-        print(f"Found board thickness: {board_thickness} with unit {ODB_UNIT.name}")
-    # NOTE: the UNITS variable is required for v8, but not for v7
+            print("Done.")
+        
+        board_thickness = 0.
+        unit = ODB_UNIT
+        for alv in attrlist_vars:
+            if verbose:
+                print(f'\t{alv.name}={alv.value}')
+            if alv.name == 'UNITS':  # only required for v8+
+                unit = ODBUnit[alv.value]
+            elif alv.name == '.board_thickness':
+                scale = get_unit_conversion(unit,ODB_UNIT)
+                board_thickness = float(alv.value)*scale
+        
+        if verbose:
+            print(f"Found board thickness: {board_thickness} with unit {ODB_UNIT.name}")
+        # NOTE: the UNITS variable is required for v8, but not for v7
+    else:
+        board_thickness = 0.0
     
     odbconf = ODBConfig(root_p, ODB_UNIT, ODB_VERSION, matrix, nsteps, nlayers,board_thickness=board_thickness)
     return odbconf

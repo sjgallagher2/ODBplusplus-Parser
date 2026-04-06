@@ -1307,7 +1307,7 @@ class ODBArchive:
         layernames = []
         layerrows = []
         for name,layer in self.layers.items():
-            if layer.type in COPPER_LAYER_TYPES:
+            if layer.type in COPPER_LAYER_TYPES or layer.type == ODBLayerMatrixType.DIELECTRIC:
                 layernames.append(name)
                 layerrows.append(layer.matrixrow)
         layeridxs = np.argsort(layerrows)  # get stackup-order of layers, top to bottom
@@ -1321,7 +1321,10 @@ class ODBArchive:
         board_thickness = 0.0
         for name in self.copper_layer_order[:-1]:  # exclude bottom
             layer = self.layers[name]
-            board_thickness += (layer.thickness + layer.dielectric_thickness)
+            if layer.dielectric_thickness is not None:
+                board_thickness += (layer.thickness + layer.dielectric_thickness)
+            else:
+                board_thickness += layer.thickness
         board_thickness += bottom_thickness  # only add bottom copper thickness,
         board_thickness = np.around(board_thickness,6)  # round to 0.001 mil
         # refine board thickness
@@ -1343,7 +1346,8 @@ class ODBArchive:
             z_offset = np.around(z_offset - layer.thickness, 6)
             # copper layer z_offset is bottom plane of copper layer
             self.layer_zoffsets[name] = z_offset
-            z_offset -= layer.dielectric_thickness
+            if layer.dielectric_thickness is not None:
+                z_offset -= layer.dielectric_thickness
         # add profile even though it's not copper
         self.layer_zoffsets['profile'] = self.layers[self.copper_layer_order[-1]].thickness  # thickness of bottom layer
     
@@ -1368,7 +1372,52 @@ class ODBArchive:
         comp_outlines = get_pkg_outlines(comp_pkg,comp_xf)
         return comp_outlines
     
-    def render_layer(self,layername,ax=None,subtract_drill=True,**patchkwargs):
+    def render_components(self,layername,refdes_list,ax=None,**patchkwargs):
+        if layername not in self.layernames:
+            raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
+        White = (0.8,0.8,0.8)  # actually grey now
+        if self.layers[layername].type == ODBLayerMatrixType.COMPONENT:
+            if 'color' not in patchkwargs:
+                patchkwargs['color']=White
+        # Plot
+        if ax is None:
+            fig,ax = plt.subplots(1,1,figsize=(7,7))
+            ax.set_aspect('equal')
+            ax.set_box_aspect(1)
+        
+        if self.layers[layername].type == ODBLayerMatrixType.COMPONENT:
+            color = White
+            if 'fill' not in patchkwargs:
+                patchkwargs['fill'] = False
+            if 'linewidth' not in patchkwargs and 'lw' not in patchkwargs:
+                patchkwargs['lw'] = 2
+            if 'edgecolor' not in patchkwargs and 'ec' not in patchkwargs:
+                patchkwargs['ec'] = patchkwargs['color']
+            if 'alpha' not in patchkwargs:
+                patchkwargs['alpha'] = 1.0
+            #self.layers[layername].compfile.components.keys()
+            for refdes in refdes_list:
+                outlines = self._get_component_outlines(refdes,self.layers[layername])
+                for po in outlines:
+                    ax.add_patch(po.to_mpl(**patchkwargs))
+                comp = self.layers[layername].compfile.components[refdes]
+                # Annotate refdes
+                annot = ax.annotate(
+                    refdes,
+                    xy=(comp.loc.x,comp.loc.y),
+                    xytext=(0,0),
+                    xycoords='data',
+                    textcoords='offset points',
+                    ha='center',
+                    va='center',
+                    annotation_clip=True,
+                    color=patchkwargs['color'],
+                    alpha=patchkwargs['alpha'],
+                    weight='bold'
+                    )
+        
+    
+    def render_layer(self,layername,ax=None,subtract_drill=True,do_union=True,**patchkwargs):
         if layername not in self.layernames:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
         # Get geometry
@@ -1403,6 +1452,8 @@ class ODBArchive:
                 patchkwargs['lw'] = 2
             if 'edgecolor' not in patchkwargs and 'ec' not in patchkwargs:
                 patchkwargs['ec'] = patchkwargs['color']
+            if 'alpha' not in patchkwargs:
+                patchkwargs['alpha'] = 1.0
             for refdes in self.layers[layername].compfile.components.keys():
                 outlines = self._get_component_outlines(refdes,self.layers[layername])
                 for po in outlines:
@@ -1419,18 +1470,22 @@ class ODBArchive:
                     va='center',
                     annotation_clip=True,
                     color=patchkwargs['color'],
+                    alpha=patchkwargs['alpha'],
                     weight='bold'
                     )
-                
-        
+
         # Profile and copper layers
         else:
-            big_union = shapely.disjoint_subset_union_all(layer_shapelys)
-            if isinstance(big_union,shapely.Polygon):
-                plot_shapely_as_patch(big_union,ax,**patchkwargs)
+            if do_union:
+                big_union = shapely.disjoint_subset_union_all(layer_shapelys)
+                if isinstance(big_union,shapely.Polygon):
+                    plot_shapely_as_patch(big_union,ax,**patchkwargs)
+                else:
+                    for buf in big_union.geoms:
+                        plot_shapely_as_patch(buf,ax,**patchkwargs)
             else:
-                for buf in big_union.geoms:
-                    plot_shapely_as_patch(buf,ax,**patchkwargs)
+                for shape in layer_shapelys.geoms:    
+                    plot_shapely_as_patch(shape, ax, **patchkwargs)
         ax.autoscale()
 
     def get_layer_shapelys(self,layername,do_union=True,subtract_drill=True):
@@ -1438,7 +1493,13 @@ class ODBArchive:
         if layername not in self.layernames:
             raise ValueError(f"Could not find layer '{layername}' in layers. Known layers: {self.layernames}")
         # Get geometry
-        layer_shapelys = [gg.to_shapely() for gg in self.geoms_on_layer[layername]]
+        layer_shapelys = []
+        for gg in self.geoms_on_layer[layername]:
+            geom = gg.to_shapely()
+            if geom.is_valid:
+                layer_shapelys.append(geom)
+            else:
+                layer_shapelys.append(geom.buffer(0))  # seems to fix things when unions fail
         if do_union:
             layer_shapelys = shapely.disjoint_subset_union_all(layer_shapelys)
         else:
@@ -1539,6 +1600,8 @@ class ODBArchive:
         layer_shapelys = self.get_layer_shapelys('profile',do_union=True,subtract_drill=subtract_drill)
         cadpolys = []
         thickness = self.layers['profile'].thickness
+        if thickness < 1e-13:
+            raise ValueError("Layer 'profile' cannot have zero thickness. Update the stackup before exporting step files.")
         
         cadpoly = self._get_shapely_cad(layer_shapelys,thickness,z_offset=z_offset,in_to_mm=in_to_mm)
         if cadpoly is not None:

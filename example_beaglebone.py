@@ -11,6 +11,7 @@ import cadquery as cq
 import cadquery.vis as cqvis
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import shapely
 
 # main module import
 import odbparse as odb
@@ -18,48 +19,26 @@ import odbparse as odb
 
 # Beaglebone Black
 root_name1 = r'examples/beagleboneblack'
+
+# HackRF-One
+root_name1 = r'C:/Users/SG1295/Documents/devel/odbtest/hackrf-one-odb'
 ark = odb.ODBArchive(root_name1,electrical_only=True)
 
-# %%
-
-layer = ark.layers['comp_+_top']
-# pkg=ark.edadata.packages['POLYSW200-5638-310']
-# pkg=ark.edadata.packages['SOP8_DCT']
-# pkg=ark.edadata.packages['USB5MINI_4SHIELDED_SMD-5']
-# pkg=ark.edadata.packages['BGA153_P14_P5_11P5X13']
-pkg=ark.edadata.packages['RD205SMD_250D']
-
-def get_pkg_outlines(pkg,pkg_xf):
-    pkg_outline = odb._pcb_geom.parse_eda_outline(pkg.outline_record)
-    pkg_outline.apply_transform(pkg_xf)
-    pkg_outlines = [pkg_outline]
-    for pin in pkg.pins:
-        po = odb._pcb_geom.parse_eda_outline(pin.outline)
-        po.apply_transform(pkg_xf)
-        pkg_outlines.append(po)
-    return pkg_outlines
-
-
-fig,ax = plt.subplots(1,1,figsize=(7,7))
-ax.set_aspect('equal')
-
-for refdes,comp in layer.compfile.components.items():
-    comp_xf = odb._pcb_geom.GeomSymbolTransform(translate_x=comp.loc.x,translate_y=comp.loc.y,rot_deg=comp.rot_deg,mirror_x=comp.mirror)
-    comp_pkg_name = ark.edadata.package_number_name_lookup[comp.pkg_ref]
-    comp_pkg = ark.edadata.packages[comp_pkg_name]
-    comp_outlines = get_pkg_outlines(comp_pkg,comp_xf)
-    
-    for po in comp_outlines:
-        ax.add_patch(po.to_mpl(fill=False,ec='k',lw=2))
-ax.autoscale()
-
-
-# %% Render top layer and profile
+# %% Render top layer, profile, components with highlights
 fig,ax = plt.subplots(1,1,figsize=(7,7))
 ax.set_aspect('equal')
 ark.render_layer('profile',ax)
 ark.render_layer('top',ax)
-ark.render_layer('comp_+_top',ax)
+ark.render_layer('comp_+_top',ax,alpha=0.5)
+
+refdes_list = [
+    'R119',
+    'R139',
+    'R133',
+    'R16',
+    'C5'
+    ]
+ark.render_components('comp_+_top',refdes_list,ax,color='r')
 
 # aesthetics
 ax.set_axis_off()
